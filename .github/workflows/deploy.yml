@@ -1,0 +1,201 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  AZURE_CONTAINER_APP_NAME: aks-roadmap-viewer
+  AZURE_RESOURCE_GROUP: aks-roadmap-rg
+  AZURE_LOCATION: northeurope
+  AZURE_CONTAINER_APP_ENV: aks-roadmap-env
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Create Resource Group
+      run: |
+        az group create --name ${{ env.AZURE_RESOURCE_GROUP }} --location ${{ env.AZURE_LOCATION }} || true
+
+    - name: Create Container Apps Environment
+      run: |
+        # Check if environment exists
+        if ! az containerapp env show --name ${{ env.AZURE_CONTAINER_APP_ENV }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+          echo "Creating Container Apps environment with logging..."
+          az containerapp env create \
+            --name ${{ env.AZURE_CONTAINER_APP_ENV }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --location ${{ env.AZURE_LOCATION }} \
+            --logs-workspace-id $(az monitor log-analytics workspace create \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --workspace-name ${{ env.AZURE_CONTAINER_APP_ENV }}-logs \
+              --location ${{ env.AZURE_LOCATION }} \
+              --query customerId --output tsv) \
+            --logs-workspace-key $(az monitor log-analytics workspace get-shared-keys \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --workspace-name ${{ env.AZURE_CONTAINER_APP_ENV }}-logs \
+              --query primarySharedKey --output tsv)
+        else
+          echo "Container Apps environment already exists"
+        fi
+
+    - name: Deploy to Azure Container Apps
+      run: |
+        # Get the image tag
+        IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+        
+        # Check if container app exists
+        if az containerapp show --name ${{ env.AZURE_CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+          echo "Updating existing Container App with new revision..."
+          
+          # Update registry credentials first
+          az containerapp registry set \
+            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --server ${{ env.REGISTRY }} \
+            --username ${{ github.actor }} \
+            --password ${{ secrets.GITHUB_TOKEN }}
+          
+          # Create new revision with updated image
+          az containerapp revision copy \
+            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --image $IMAGE_TAG \
+            --set-env-vars \
+              NODE_ENV=production \
+              PORT=3000 \
+              GITHUB_TOKEN="${{ secrets.GH_TOKEN }}" \
+              AZURE_OPENAI_API_KEY="${{ secrets.AZURE_OPENAI_API_KEY }}" \
+              AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+              AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}"
+        else
+          echo "Creating new Container App..."
+          az containerapp create \
+            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --environment ${{ env.AZURE_CONTAINER_APP_ENV }} \
+            --image $IMAGE_TAG \
+            --registry-server ${{ env.REGISTRY }} \
+            --registry-username ${{ github.actor }} \
+            --registry-password ${{ secrets.GITHUB_TOKEN }} \
+            --target-port 3000 \
+            --ingress external \
+            --min-replicas 1 \
+            --max-replicas 3 \
+            --cpu 1.0 \
+            --memory 2.0Gi \
+            --env-vars \
+              NODE_ENV=production \
+              PORT=3000 \
+              GITHUB_TOKEN="${{ secrets.GH_TOKEN }}" \
+              AZURE_OPENAI_API_KEY="${{ secrets.AZURE_OPENAI_API_KEY }}" \
+              AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+              AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}"
+        fi
+
+    - name: Get Container App Info
+      id: container-app-info
+      run: |
+        FQDN=$(az containerapp show --name ${{ env.AZURE_CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn --output tsv)
+        echo "Container App deployed successfully!"
+        echo "FQDN: $FQDN"
+        echo "Access your app at: https://$FQDN"
+        echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
+
+    - name: Show Container App Logs
+      run: |
+        echo "📋 Recent Container App logs:"
+        az containerapp logs show \
+          --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --follow false \
+          --tail 50 || echo "Could not retrieve logs (this is normal for new deployments)"
+
+    - name: Test deployment
+      run: |
+        FQDN=${{ steps.container-app-info.outputs.fqdn }}
+        echo "Testing deployment at https://$FQDN"
+
+        # Wait for container to be ready
+        sleep 30
+
+        # Test health endpoint with 10s timeout
+        timeout 10s bash -c "
+        FQDN='${{ steps.container-app-info.outputs.fqdn }}'
+        for i in {1..10}; do
+          if curl -f \"https://\$FQDN/api/cache-info\"; then
+            echo \"✅ Deployment successful!\"
+            echo \"🌐 App URL: https://\$FQDN\"
+            exit 0
+          else
+            echo \"⏳ Waiting for container to be ready... (attempt \$i/10)\"
+            sleep 1
+          fi
+        done
+        echo \"❌ Deployment test failed after 10 seconds\"
+        exit 1
+        "
+
+    - name: Show Container App Logs After Test
+      if: always()
+      run: |
+        echo "📋 Container App logs after test:"
+        az containerapp logs show \
+          --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --follow false \
+          --tail 100 || echo "Could not retrieve logs"
+        
+        echo "📊 Container App revision status:"
+        az containerapp revision list \
+          --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --query '[].{Name:name,Active:properties.active,CreatedTime:properties.createdTime,Replicas:properties.replicas}' \
+          --output table

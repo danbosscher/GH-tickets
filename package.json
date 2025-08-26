@@ -1,0 +1,38 @@
+{
+  "name": "azure-aks-roadmap-viewer",
+  "version": "1.0.0",
+  "description": "Azure AKS roadmap viewer for GitHub project board",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "build": "npm run client:build && npm run server:build",
+    "start": "node dist/server/index.js",
+    "client:dev": "vite",
+    "client:build": "tsc && vite build",
+    "server:dev": "tsx watch server/index.ts",
+    "server:build": "tsc -p server/tsconfig.json"
+  },
+  "dependencies": {
+    "@octokit/graphql": "^7.0.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "openai": "^5.15.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.15",
+    "@types/express": "^4.17.20",
+    "@types/node": "^20.8.9",
+    "@types/react": "^18.2.33",
+    "@types/react-dom": "^18.2.14",
+    "@vitejs/plugin-react": "^4.1.1",
+    "concurrently": "^8.2.2",
+    "tsx": "^4.1.4",
+    "typescript": "^5.2.2",
+    "vite": "^4.5.0"
+  }
+}
