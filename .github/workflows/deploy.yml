@@ -90,11 +90,11 @@ jobs:
       run: |
         # Get the image tag
         IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
-        
+
         # Check if container app exists
         if az containerapp show --name ${{ env.AZURE_CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
           echo "Updating existing Container App with new revision..."
-          
+
           # Update registry credentials first
           az containerapp registry set \
             --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
@@ -102,7 +102,7 @@ jobs:
             --server ${{ env.REGISTRY }} \
             --username ${{ github.actor }} \
             --password ${{ secrets.GITHUB_TOKEN }}
-          
+
           # Create new revision with updated image
           az containerapp revision copy \
             --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
@@ -192,7 +192,7 @@ jobs:
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
           --follow false \
           --tail 100 || echo "Could not retrieve logs"
-        
+
         echo "📊 Container App revision status:"
         az containerapp revision list \
           --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
