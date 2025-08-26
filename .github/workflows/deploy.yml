@@ -9,7 +9,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   AZURE_CONTAINER_APP_NAME: aks-roadmap-viewer
-  AZURE_RESOURCE_GROUP: aks-roadmap-rg
+  AZURE_RESOURCE_GROUP: aks-gh-tool
   AZURE_LOCATION: northeurope
   AZURE_CONTAINER_APP_ENV: aks-roadmap-env
 
