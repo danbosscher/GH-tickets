@@ -143,10 +143,15 @@ const AKSIssuesPage: React.FC = () => {
       eventSource.onmessage = (event) => {
         try {
           const progressData = JSON.parse(event.data);
+          console.log('Progress update received:', progressData);
           setProgress(progressData);
         } catch (e) {
           console.error('Failed to parse progress data:', e);
         }
+      };
+      
+      eventSource.onopen = () => {
+        console.log('EventSource connection opened');
       };
       
       eventSource.onerror = (error) => {
@@ -161,6 +166,9 @@ const AKSIssuesPage: React.FC = () => {
       };
       
       setTimeout(() => cleanup?.(), 600000); // Cleanup after 10 minutes (AKS processing can take a long time)
+      
+      // Add a small delay to ensure EventSource is connected before starting the request
+      await new Promise(resolve => setTimeout(resolve, 100));
       
       const url = forceRefresh ? '/api/aks-issues?refresh=true' : '/api/aks-issues';
       const response = await fetch(url);

@@ -581,8 +581,18 @@ app.get('/api/progress', (req, res) => {
   // Store the response object with request type for progress updates
   progressClients.set(clientId, { res, type: requestType });
   
+  console.log(`New EventSource client connected for ${requestType}: ${clientId}`);
+  
+  // Send initial connection confirmation
+  try {
+    res.write(`data: ${JSON.stringify({ step: 'Connected to progress stream', current: 0, total: 100 })}\n\n`);
+  } catch (error) {
+    console.error('Failed to send initial progress message:', error);
+  }
+  
   // Clean up on client disconnect
   req.on('close', () => {
+    console.log(`EventSource client disconnected: ${clientId}`);
     progressClients.delete(clientId);
   });
 });
@@ -592,17 +602,23 @@ const progressClients = new Map<string, { res: any, type: string }>();
 
 function sendProgress(step: string, current: number, total: number, requestType: string = 'roadmap') {
   const data = JSON.stringify({ step, current, total });
+  console.log(`Sending progress for ${requestType}: ${step} (${current}/${total})`);
   
+  let clientCount = 0;
   // Only send to clients of the same request type
   progressClients.forEach((client, clientId) => {
     if (client.type === requestType) {
+      clientCount++;
       try {
         client.res.write(`data: ${data}\n\n`);
       } catch (error) {
+        console.error(`Failed to send progress to client ${clientId}:`, error);
         progressClients.delete(clientId);
       }
     }
   });
+  
+  console.log(`Progress sent to ${clientCount} ${requestType} clients`);
 }
 app.get('/api/cache-info', (req, res) => {
   try {
