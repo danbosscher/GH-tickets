@@ -37,10 +37,12 @@ const App: React.FC = () => {
   const [selectedLabels, setSelectedLabels] = useState<Set<string>>(new Set());
   const [selectedAssignees, setSelectedAssignees] = useState<Set<string>>(new Set());
   const [selectedNeedsResponse, setSelectedNeedsResponse] = useState<boolean>(false);
+  const [selectedUnassigned, setSelectedUnassigned] = useState<boolean>(false);
   const [labelsDropdownOpen, setLabelsDropdownOpen] = useState(false);
   const [assigneesDropdownOpen, setAssigneesDropdownOpen] = useState(false);
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
   const [needsResponseDropdownOpen, setNeedsResponseDropdownOpen] = useState(false);
+  const [unassignedDropdownOpen, setUnassignedDropdownOpen] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(new Set(['title', 'labels', 'assignees', 'created', 'updated', 'timeline', 'lastComment', 'needsResponse']));
   const [columnsDropdownOpen, setColumnsDropdownOpen] = useState(false);
   const [sortField, setSortField] = useState<string>('');
@@ -69,6 +71,7 @@ const App: React.FC = () => {
       const savedLabels = localStorage.getItem('selectedLabels');
       const savedAssignees = localStorage.getItem('selectedAssignees');
       const savedNeedsResponse = localStorage.getItem('selectedNeedsResponse');
+      const savedUnassigned = localStorage.getItem('selectedUnassigned');
       const savedVisibleColumns = localStorage.getItem('visibleColumns');
       
       if (savedStatuses) {
@@ -103,6 +106,10 @@ const App: React.FC = () => {
       
       if (savedNeedsResponse) {
         setSelectedNeedsResponse(JSON.parse(savedNeedsResponse));
+      }
+      
+      if (savedUnassigned) {
+        setSelectedUnassigned(JSON.parse(savedUnassigned));
       }
       
       if (savedVisibleColumns) {
@@ -194,10 +201,10 @@ const App: React.FC = () => {
       item.labels.length === 0 || 
       item.labels.some(label => selectedLabels.has(label.name));
     const assigneeMatch = selectedAssignees.size === 0 ||
-      item.assignees.length === 0 ||
       item.assignees.some(assignee => selectedAssignees.has(assignee.name || assignee.login));
+    const unassignedMatch = !selectedUnassigned || item.assignees.length === 0;
     const needsResponseMatch = !selectedNeedsResponse || item.needsResponse;
-    return statusMatch && labelMatch && assigneeMatch && needsResponseMatch;
+    return statusMatch && labelMatch && assigneeMatch && unassignedMatch && needsResponseMatch;
   });
 
   const sortedItems = [...filteredItems].sort((a, b) => {
@@ -381,6 +388,12 @@ const App: React.FC = () => {
     const newValue = !selectedNeedsResponse;
     setSelectedNeedsResponse(newValue);
     localStorage.setItem('selectedNeedsResponse', JSON.stringify(newValue));
+  };
+
+  const handleUnassignedToggle = () => {
+    const newValue = !selectedUnassigned;
+    setSelectedUnassigned(newValue);
+    localStorage.setItem('selectedUnassigned', JSON.stringify(newValue));
   };
 
   const handleColumnToggle = (column: string) => {
@@ -594,6 +607,32 @@ const App: React.FC = () => {
                         <span>{assignee}</span>
                       </label>
                     ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          <div className="filter-item">
+            <h3>Assignment:</h3>
+            <div className="dropdown-filter">
+              <button 
+                className="dropdown-toggle"
+                onClick={() => setUnassignedDropdownOpen(!unassignedDropdownOpen)}
+              >
+                Assignment ▼
+              </button>
+              {unassignedDropdownOpen && (
+                <div className="dropdown-content">
+                  <div className="dropdown-options">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={selectedUnassigned}
+                        onChange={handleUnassignedToggle}
+                      />
+                      <span>Show only unassigned items</span>
+                    </label>
                   </div>
                 </div>
               )}
