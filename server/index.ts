@@ -431,7 +431,15 @@ JSON Response:`;
     }
     
     try {
-      const parsed = JSON.parse(result);
+      // Remove markdown code blocks if present
+      let cleanResult = result.trim();
+      if (cleanResult.startsWith('```json')) {
+        cleanResult = cleanResult.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (cleanResult.startsWith('```')) {
+        cleanResult = cleanResult.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
+      
+      const parsed = JSON.parse(cleanResult);
       
       if (!parsed.date || parsed.date === 'None' || !parsed.text || parsed.text === 'None') {
         saveAICache(cacheKey, null, false);
@@ -541,9 +549,10 @@ app.get('/api/roadmap', async (req, res) => {
     let hasNextPage = true;
     let cursor: string | null = null;
 
-    // Fetch all pages
+    // Fetch all pages (with reasonable limit)
     let pageCount = 0;
-    while (hasNextPage) {
+    const MAX_PAGES = 50; // Prevent excessive data fetching
+    while (hasNextPage && pageCount < MAX_PAGES) {
       pageCount++;
       sendProgress(`Fetching GitHub data (page ${pageCount})`, pageCount * 10, 100);
       const query = `
@@ -552,7 +561,7 @@ app.get('/api/roadmap', async (req, res) => {
             projectV2(number: 685) {
               id
               title
-              items(first: 100, after: $cursor) {
+              items(first: 50, after: $cursor) {
                 pageInfo {
                   hasNextPage
                   endCursor
@@ -581,7 +590,7 @@ app.get('/api/roadmap', async (req, res) => {
                           avatarUrl
                         }
                       }
-                      comments(first: 100) {
+                      comments(first: 5) {
                         pageInfo {
                           hasNextPage
                           endCursor
@@ -622,6 +631,10 @@ app.get('/api/roadmap', async (req, res) => {
       `;
 
       const response: any = await graphqlWithAuth(query, { cursor });
+      
+      if (!response?.organization?.projectV2) {
+        throw new Error('Failed to fetch project data from GitHub API');
+      }
       
       const projectData = response.organization.projectV2;
       const items = projectData.items;
