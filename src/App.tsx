@@ -19,6 +19,14 @@ interface RoadmapItem {
     avatarUrl: string;
   }>;
   extractedDate: string | null;
+  lastComment?: {
+    createdAt: string;
+    author: {
+      login: string;
+      name: string | null;
+    };
+  } | null;
+  needsResponse?: boolean;
 }
 
 const App: React.FC = () => {
@@ -28,8 +36,13 @@ const App: React.FC = () => {
   const [selectedStatuses, setSelectedStatuses] = useState<Set<string>>(new Set());
   const [selectedLabels, setSelectedLabels] = useState<Set<string>>(new Set());
   const [selectedAssignees, setSelectedAssignees] = useState<Set<string>>(new Set());
+  const [selectedNeedsResponse, setSelectedNeedsResponse] = useState<boolean>(false);
   const [labelsDropdownOpen, setLabelsDropdownOpen] = useState(false);
   const [assigneesDropdownOpen, setAssigneesDropdownOpen] = useState(false);
+  const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
+  const [needsResponseDropdownOpen, setNeedsResponseDropdownOpen] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(new Set(['title', 'labels', 'assignees', 'created', 'updated', 'timeline', 'lastComment', 'needsResponse']));
+  const [columnsDropdownOpen, setColumnsDropdownOpen] = useState(false);
   const [sortField, setSortField] = useState<string>('');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
@@ -55,6 +68,8 @@ const App: React.FC = () => {
       const savedStatuses = localStorage.getItem('selectedStatuses');
       const savedLabels = localStorage.getItem('selectedLabels');
       const savedAssignees = localStorage.getItem('selectedAssignees');
+      const savedNeedsResponse = localStorage.getItem('selectedNeedsResponse');
+      const savedVisibleColumns = localStorage.getItem('visibleColumns');
       
       if (savedStatuses) {
         setSelectedStatuses(new Set(JSON.parse(savedStatuses)));
@@ -84,6 +99,14 @@ const App: React.FC = () => {
         // Set default selected assignees (all assignees)
         const uniqueAssignees = [...new Set(items.flatMap(item => item.assignees.map(assignee => assignee.name || assignee.login)))]
         setSelectedAssignees(new Set(uniqueAssignees));
+      }
+      
+      if (savedNeedsResponse) {
+        setSelectedNeedsResponse(JSON.parse(savedNeedsResponse));
+      }
+      
+      if (savedVisibleColumns) {
+        setVisibleColumns(new Set(JSON.parse(savedVisibleColumns)));
       }
     }
   }, [items]);
@@ -173,7 +196,8 @@ const App: React.FC = () => {
     const assigneeMatch = selectedAssignees.size === 0 ||
       item.assignees.length === 0 ||
       item.assignees.some(assignee => selectedAssignees.has(assignee.name || assignee.login));
-    return statusMatch && labelMatch && assigneeMatch;
+    const needsResponseMatch = !selectedNeedsResponse || item.needsResponse;
+    return statusMatch && labelMatch && assigneeMatch && needsResponseMatch;
   });
 
   const sortedItems = [...filteredItems].sort((a, b) => {
@@ -197,6 +221,10 @@ const App: React.FC = () => {
       case 'updatedAt':
         aValue = new Date(a.lastEditedAt || a.updatedAt);
         bValue = new Date(b.lastEditedAt || b.updatedAt);
+        break;
+      case 'lastComment':
+        aValue = a.lastComment ? new Date(a.lastComment.createdAt) : new Date(0);
+        bValue = b.lastComment ? new Date(b.lastComment.createdAt) : new Date(0);
         break;
       case 'assignees':
         aValue = a.assignees.length > 0 ? a.assignees[0].name || a.assignees[0].login : '';
@@ -297,6 +325,16 @@ const App: React.FC = () => {
     localStorage.setItem('selectedStatuses', JSON.stringify([...newSelected]));
   };
 
+  const handleStatusSelectAll = () => {
+    if (selectedStatuses.size === uniqueStatuses.length) {
+      setSelectedStatuses(new Set());
+      localStorage.setItem('selectedStatuses', JSON.stringify([]));
+    } else {
+      setSelectedStatuses(new Set(uniqueStatuses));
+      localStorage.setItem('selectedStatuses', JSON.stringify(uniqueStatuses));
+    }
+  };
+
   const handleLabelToggle = (label: string) => {
     const newSelected = new Set(selectedLabels);
     if (newSelected.has(label)) {
@@ -337,6 +375,23 @@ const App: React.FC = () => {
       setSelectedAssignees(new Set(uniqueAssignees));
       localStorage.setItem('selectedAssignees', JSON.stringify(uniqueAssignees));
     }
+  };
+
+  const handleNeedsResponseToggle = () => {
+    const newValue = !selectedNeedsResponse;
+    setSelectedNeedsResponse(newValue);
+    localStorage.setItem('selectedNeedsResponse', JSON.stringify(newValue));
+  };
+
+  const handleColumnToggle = (column: string) => {
+    const newVisible = new Set(visibleColumns);
+    if (newVisible.has(column)) {
+      newVisible.delete(column);
+    } else {
+      newVisible.add(column);
+    }
+    setVisibleColumns(newVisible);
+    localStorage.setItem('visibleColumns', JSON.stringify([...newVisible]));
   };
 
   const handleSort = (field: string) => {
@@ -427,98 +482,222 @@ const App: React.FC = () => {
       </div>
 
       <div className="filters">
-        <div className="filter-section">
-          <h3>Filter by Status:</h3>
-          <div className="checkbox-group status-grid">
-            {uniqueStatuses.map(status => (
-              <label key={status} className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={selectedStatuses.has(status)}
-                  onChange={() => handleStatusToggle(status)}
-                />
-                <span className={`status-badge ${getStatusBadgeClass(status)}`}>
-                  {status}
-                </span>
-                <span className="count">({statusCounts[status]})</span>
-              </label>
-            ))}
-          </div>
-        </div>
-        
-        <div className="filter-section">
-          <h3>Filter by Labels:</h3>
-          <div className="dropdown-filter">
-            <button 
-              className="dropdown-toggle"
-              onClick={() => setLabelsDropdownOpen(!labelsDropdownOpen)}
-            >
-              Labels ({selectedLabels.size}/{uniqueLabels.length}) ▼
-            </button>
-            {labelsDropdownOpen && (
-              <div className="dropdown-content">
-                <div className="select-all-option">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={selectedLabels.size === uniqueLabels.length}
-                      onChange={handleLabelSelectAll}
-                    />
-                    <span>Select All</span>
-                  </label>
-                </div>
-                <div className="dropdown-options">
-                  {uniqueLabels.map(label => (
-                    <label key={label} className="checkbox-label">
+        <div className="filters-horizontal">
+          <div className="filter-item">
+            <h3>Status:</h3>
+            <div className="dropdown-filter">
+              <button 
+                className="dropdown-toggle"
+                onClick={() => setStatusDropdownOpen(!statusDropdownOpen)}
+              >
+                Status ({selectedStatuses.size}/{uniqueStatuses.length}) ▼
+              </button>
+              {statusDropdownOpen && (
+                <div className="dropdown-content">
+                  <div className="select-all-option">
+                    <label className="checkbox-label">
                       <input
                         type="checkbox"
-                        checked={selectedLabels.has(label)}
-                        onChange={() => handleLabelToggle(label)}
+                        checked={selectedStatuses.size === uniqueStatuses.length}
+                        onChange={handleStatusSelectAll}
                       />
-                      <span className="label-badge">{label}</span>
+                      <span>Select All</span>
                     </label>
-                  ))}
+                  </div>
+                  <div className="dropdown-options">
+                    {uniqueStatuses.map(status => (
+                      <label key={status} className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={selectedStatuses.has(status)}
+                          onChange={() => handleStatusToggle(status)}
+                        />
+                        <span className={`status-badge ${getStatusBadgeClass(status)}`}>
+                          {status}
+                        </span>
+                        <span className="count">({statusCounts[status]})</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
-        
-        <div className="filter-section">
-          <h3>Filter by Assignees:</h3>
-          <div className="dropdown-filter">
-            <button 
-              className="dropdown-toggle"
-              onClick={() => setAssigneesDropdownOpen(!assigneesDropdownOpen)}
-            >
-              Assignees ({selectedAssignees.size}/{uniqueAssignees.length}) ▼
-            </button>
-            {assigneesDropdownOpen && (
-              <div className="dropdown-content">
-                <div className="select-all-option">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={selectedAssignees.size === uniqueAssignees.length}
-                      onChange={handleAssigneeSelectAll}
-                    />
-                    <span>Select All</span>
-                  </label>
-                </div>
-                <div className="dropdown-options">
-                  {uniqueAssignees.map(assignee => (
-                    <label key={assignee} className="checkbox-label">
+          
+          <div className="filter-item">
+            <h3>Labels:</h3>
+            <div className="dropdown-filter">
+              <button 
+                className="dropdown-toggle"
+                onClick={() => setLabelsDropdownOpen(!labelsDropdownOpen)}
+              >
+                Labels ({selectedLabels.size}/{uniqueLabels.length}) ▼
+              </button>
+              {labelsDropdownOpen && (
+                <div className="dropdown-content">
+                  <div className="select-all-option">
+                    <label className="checkbox-label">
                       <input
                         type="checkbox"
-                        checked={selectedAssignees.has(assignee)}
-                        onChange={() => handleAssigneeToggle(assignee)}
+                        checked={selectedLabels.size === uniqueLabels.length}
+                        onChange={handleLabelSelectAll}
                       />
-                      <span>{assignee}</span>
+                      <span>Select All</span>
                     </label>
-                  ))}
+                  </div>
+                  <div className="dropdown-options">
+                    {uniqueLabels.map(label => (
+                      <label key={label} className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={selectedLabels.has(label)}
+                          onChange={() => handleLabelToggle(label)}
+                        />
+                        <span className="label-badge">{label}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
+          </div>
+          
+          <div className="filter-item">
+            <h3>Assignees:</h3>
+            <div className="dropdown-filter">
+              <button 
+                className="dropdown-toggle"
+                onClick={() => setAssigneesDropdownOpen(!assigneesDropdownOpen)}
+              >
+                Assignees ({selectedAssignees.size}/{uniqueAssignees.length}) ▼
+              </button>
+              {assigneesDropdownOpen && (
+                <div className="dropdown-content">
+                  <div className="select-all-option">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={selectedAssignees.size === uniqueAssignees.length}
+                        onChange={handleAssigneeSelectAll}
+                      />
+                      <span>Select All</span>
+                    </label>
+                  </div>
+                  <div className="dropdown-options">
+                    {uniqueAssignees.map(assignee => (
+                      <label key={assignee} className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={selectedAssignees.has(assignee)}
+                          onChange={() => handleAssigneeToggle(assignee)}
+                        />
+                        <span>{assignee}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          <div className="filter-item">
+            <h3>Response:</h3>
+            <div className="dropdown-filter">
+              <button 
+                className="dropdown-toggle"
+                onClick={() => setNeedsResponseDropdownOpen(!needsResponseDropdownOpen)}
+              >
+                Needs Response ▼
+              </button>
+              {needsResponseDropdownOpen && (
+                <div className="dropdown-content">
+                  <div className="dropdown-options">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={selectedNeedsResponse}
+                        onChange={handleNeedsResponseToggle}
+                      />
+                      <span>Show only items needing response 🚩</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          <div className="filter-item">
+            <h3>Columns:</h3>
+            <div className="dropdown-filter">
+              <button 
+                className="dropdown-toggle"
+                onClick={() => setColumnsDropdownOpen(!columnsDropdownOpen)}
+              >
+                Columns ({visibleColumns.size}/8) ▼
+              </button>
+              {columnsDropdownOpen && (
+                <div className="dropdown-content">
+                  <div className="dropdown-options">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has('labels')}
+                        onChange={() => handleColumnToggle('labels')}
+                      />
+                      <span>Labels</span>
+                    </label>
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has('assignees')}
+                        onChange={() => handleColumnToggle('assignees')}
+                      />
+                      <span>Assignees</span>
+                    </label>
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has('created')}
+                        onChange={() => handleColumnToggle('created')}
+                      />
+                      <span>Issue created</span>
+                    </label>
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has('updated')}
+                        onChange={() => handleColumnToggle('updated')}
+                      />
+                      <span>Issue updated</span>
+                    </label>
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has('lastComment')}
+                        onChange={() => handleColumnToggle('lastComment')}
+                      />
+                      <span>Last comment</span>
+                    </label>
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has('needsResponse')}
+                        onChange={() => handleColumnToggle('needsResponse')}
+                      />
+                      <span>Needs response</span>
+                    </label>
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has('timeline')}
+                        onChange={() => handleColumnToggle('timeline')}
+                      />
+                      <span>Customer Timeline</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -530,17 +709,35 @@ const App: React.FC = () => {
               <th className="sortable" onClick={() => handleSort('title')}>
                 Feature{getSortIcon('title')}
               </th>
-              <th>Labels</th>
-              <th className="sortable" onClick={() => handleSort('assignees')}>
-                Assignees{getSortIcon('assignees')}
-              </th>
-              <th className="sortable" onClick={() => handleSort('createdAt')}>
-                Created{getSortIcon('createdAt')}
-              </th>
-              <th className="sortable" onClick={() => handleSort('updatedAt')}>
-                Last Updated{getSortIcon('updatedAt')}
-              </th>
-              <th>Customer Timeline</th>
+              {visibleColumns.has('labels') && (
+                <th>Labels</th>
+              )}
+              {visibleColumns.has('assignees') && (
+                <th className="sortable" onClick={() => handleSort('assignees')}>
+                  Assignees{getSortIcon('assignees')}
+                </th>
+              )}
+              {visibleColumns.has('created') && (
+                <th className="sortable" onClick={() => handleSort('createdAt')}>
+                  Issue created{getSortIcon('createdAt')}
+                </th>
+              )}
+              {visibleColumns.has('updated') && (
+                <th className="sortable" onClick={() => handleSort('updatedAt')}>
+                  Issue updated{getSortIcon('updatedAt')}
+                </th>
+              )}
+              {visibleColumns.has('lastComment') && (
+                <th className="sortable" onClick={() => handleSort('lastComment')}>
+                  Last comment{getSortIcon('lastComment')}
+                </th>
+              )}
+              {visibleColumns.has('needsResponse') && (
+                <th>Needs response</th>
+              )}
+              {visibleColumns.has('timeline') && (
+                <th>Customer Timeline</th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -563,65 +760,99 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 </td>
-                <td>
-                  <div className="labels">
-                    {item.labels.map((label) => (
-                      <span 
-                        key={label.name} 
-                        className="label-badge table-label"
-                        style={{ backgroundColor: `#${label.color}`, color: '#fff' }}
-                      >
-                        {label.name}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td>
-                  <div className="assignees">
-                    {item.assignees.length > 0 ? (
-                      item.assignees.map((assignee) => (
-                        <div key={assignee.login} className="assignee">
-                          <img src={assignee.avatarUrl} alt={assignee.login} />
-                          <span>{assignee.name || assignee.login}</span>
-                        </div>
-                      ))
-                    ) : (
-                      <span style={{ color: '#666', fontSize: '12px' }}>Unassigned</span>
-                    )}
-                  </div>
-                </td>
-                <td>
-                  <div className="date-info">
-                    {formatDate(item.createdAt)}
-                    <br />
-                    <small>({getWaitingTime(item.createdAt)} ago)</small>
-                  </div>
-                </td>
-                <td>
-                  <div className="date-info">
-                    {item.lastEditedAt ? (
-                      <>
-                        {formatDate(item.lastEditedAt)}
-                        <br />
-                        <small>({getTimeAgo(item.lastEditedAt)})</small>
-                      </>
-                    ) : null}
-                  </div>
-                </td>
-                <td>
-                  {item.extractedDate ? (
-                    <div className={`extracted-date ${item.extractedDate === 'OpenAI extraction failed' ? 'extraction-failed' : ''}`}>
-                      {item.extractedDate}
+                {visibleColumns.has('labels') && (
+                  <td>
+                    <div className="labels">
+                      {item.labels.map((label) => (
+                        <span 
+                          key={label.name} 
+                          className="label-badge table-label"
+                          style={{ backgroundColor: `#${label.color}`, color: '#fff' }}
+                        >
+                          {label.name}
+                        </span>
+                      ))}
                     </div>
-                  ) : (
-                    !item.status.toLowerCase().includes('backlog') && 
-                    !item.status.toLowerCase().includes('archive') ? (
-                      <span style={{ color: '#999', fontSize: '12px' }}>
-                        No timeline found
+                  </td>
+                )}
+                {visibleColumns.has('assignees') && (
+                  <td>
+                    <div className="assignees">
+                      {item.assignees.length > 0 ? (
+                        item.assignees.map((assignee) => (
+                          <div key={assignee.login} className="assignee">
+                            <img src={assignee.avatarUrl} alt={assignee.login} />
+                            <span>{assignee.name || assignee.login}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <span style={{ color: '#666', fontSize: '12px' }}>Unassigned</span>
+                      )}
+                    </div>
+                  </td>
+                )}
+                {visibleColumns.has('created') && (
+                  <td>
+                    <div className="date-info">
+                      {formatDate(item.createdAt)}
+                      <br />
+                      <small>({getWaitingTime(item.createdAt)} ago)</small>
+                    </div>
+                  </td>
+                )}
+                {visibleColumns.has('updated') && (
+                  <td>
+                    <div className="date-info">
+                      {item.lastEditedAt ? (
+                        <>
+                          {formatDate(item.lastEditedAt)}
+                          <br />
+                          <small>({getTimeAgo(item.lastEditedAt)})</small>
+                        </>
+                      ) : null}
+                    </div>
+                  </td>
+                )}
+                {visibleColumns.has('lastComment') && (
+                  <td>
+                    <div className="date-info">
+                      {item.lastComment ? (
+                        <>
+                          {formatDate(item.lastComment.createdAt)}
+                          <br />
+                          <small>by {item.lastComment.author.name || item.lastComment.author.login}</small>
+                        </>
+                      ) : (
+                        <span style={{ color: '#666', fontSize: '12px' }}>No comments</span>
+                      )}
+                    </div>
+                  </td>
+                )}
+                {visibleColumns.has('needsResponse') && (
+                  <td>
+                    {item.needsResponse && (
+                      <span className="needs-response-flag" title="Needs response from team">
+                        🚩
                       </span>
-                    ) : null
-                  )}
-                </td>
+                    )}
+                  </td>
+                )}
+                {visibleColumns.has('timeline') && (
+                  <td>
+                    {item.extractedDate ? (
+                      <div className={`extracted-date ${item.extractedDate === 'OpenAI extraction failed' ? 'extraction-failed' : ''}`}>
+                        {item.extractedDate}
+                      </div>
+                    ) : (
+                      !item.status.toLowerCase().includes('backlog') && 
+                      !item.status.toLowerCase().includes('archive') ? (
+                        <span style={{ color: '#999', fontSize: '12px' }}>
+                          No timeline found
+                        </span>
+                      ) : null
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

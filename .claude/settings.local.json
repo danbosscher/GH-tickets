@@ -39,7 +39,8 @@
       "Bash(sudo docker rm gh-tickets-app)",
       "Bash(sudo docker stop:*)",
       "Bash(docker run:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(pkill:*)"
     ],
     "deny": [],
     "ask": []

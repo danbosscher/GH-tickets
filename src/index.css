@@ -143,6 +143,27 @@ body {
   margin-bottom: 20px;
 }
 
+.filters-horizontal {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.filter-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+}
+
+.filter-item h3 {
+  margin: 0;
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .filter-section {
   margin-bottom: 20px;
 }
@@ -472,4 +493,14 @@ body {
 .dropdown-options .checkbox-label {
   margin: 2px 0;
   padding: 6px 8px;
+}
+
+.needs-response-flag {
+  font-size: 16px;
+  cursor: help;
+  transition: transform 0.2s;
+}
+
+.needs-response-flag:hover {
+  transform: scale(1.2);
 }

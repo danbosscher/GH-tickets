@@ -148,6 +148,14 @@ interface RoadmapItem {
     avatarUrl: string;
   }>;
   extractedDate: string | null;
+  lastComment?: {
+    createdAt: string;
+    author: {
+      login: string;
+      name: string | null;
+    };
+  } | null;
+  needsResponse?: boolean;
 }
 
 // Function to extract availability dates from issue body using AI with caching and retry
@@ -367,6 +375,17 @@ app.get('/api/roadmap', async (req, res) => {
                           avatarUrl
                         }
                       }
+                      comments(last: 1) {
+                        nodes {
+                          createdAt
+                          author {
+                            login
+                            ... on User {
+                              name
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                   fieldValues(first: 20) {
@@ -402,65 +421,90 @@ app.get('/api/roadmap', async (req, res) => {
     console.log(`Total items fetched: ${allItems.length}`);
     sendProgress('Processing items for AI extraction', 0, allItems.length);
 
-    const roadmapItems: RoadmapItem[] = [];
     const validItems = allItems.filter((item: any) => item.content);
     
     console.log(`Processing ${validItems.length} valid items for AI extraction...`);
     
-    for (let i = 0; i < validItems.length; i++) {
-      const item = validItems[i];
-      const issue = item.content;
+    const roadmapItems: RoadmapItem[] = [];
+    const CONCURRENCY_LIMIT = 8; // Process 8 items in parallel
+    
+    // Process items in batches
+    for (let i = 0; i < validItems.length; i += CONCURRENCY_LIMIT) {
+      const batch = validItems.slice(i, i + CONCURRENCY_LIMIT);
+      const batchPromises = batch.map(async (item: any, batchIndex: number) => {
+        const globalIndex = i + batchIndex;
+        const issue = item.content;
+        
+        sendProgress(`Processing AI extraction (${globalIndex + 1}/${validItems.length})`, globalIndex + 1, validItems.length);
+        
+        if (!issue || !issue.title) {
+          console.log(`Skipping item ${globalIndex + 1}/${validItems.length} with no title:`, JSON.stringify(item, null, 2));
+          return null;
+        }
+        
+        console.log(`Processing ${globalIndex + 1}/${validItems.length}: ${issue.title}`);
+        
+        // Find status field
+        const statusField = item.fieldValues.nodes.find(
+          (field: any) => field.field?.name === 'Status'
+        );
+        
+        // Use AI extraction with caching and retry system
+        const extractedDate = await extractAvailabilityDateWithAI(issue.body || '', issue.title);
+        
+        // If extraction failed, add to retry queue
+        if (extractedDate === 'OpenAI extraction failed') {
+          addToRetryQueue(issue.title, issue.body || '');
+        }
+        
+        // Get last comment info
+        const lastComment = issue.comments.nodes.length > 0 && issue.comments.nodes[0].author ? {
+          createdAt: issue.comments.nodes[0].createdAt,
+          author: {
+            login: issue.comments.nodes[0].author.login,
+            name: issue.comments.nodes[0].author.name || null
+          }
+        } : null;
+        
+        // Determine if needs response from team
+        const allAssigneeLogins = issue.assignees.nodes.map((assignee: any) => assignee.login);
+        const needsResponse = lastComment && !allAssigneeLogins.includes(lastComment.author.login);
+        
+        const roadmapItem: RoadmapItem = {
+          id: issue.id,
+          title: issue.title,
+          url: issue.url,
+          body: issue.body,
+          createdAt: issue.createdAt,
+          updatedAt: issue.updatedAt,
+          lastEditedAt: issue.lastEditedAt,
+          status: statusField?.name || 'Unknown',
+          labels: issue.labels.nodes.map((label: any) => ({
+            name: label.name,
+            color: label.color
+          })),
+          assignees: issue.assignees.nodes.map((assignee: any) => ({
+            login: assignee.login,
+            name: assignee.name,
+            avatarUrl: assignee.avatarUrl
+          })),
+          extractedDate,
+          lastComment,
+          needsResponse
+        };
+        
+        return roadmapItem;
+      });
       
-      sendProgress(`Processing AI extraction (${i + 1}/${validItems.length})`, i + 1, validItems.length);
+      // Wait for all items in the batch to complete
+      const batchResults = await Promise.all(batchPromises);
       
-      if (!issue || !issue.title) {
-        console.log(`Skipping item ${i + 1}/${validItems.length} with no title:`, JSON.stringify(item, null, 2));
-        continue;
-      }
+      // Add valid results to roadmapItems
+      batchResults.forEach(item => {
+        if (item) roadmapItems.push(item);
+      });
       
-      console.log(`Processing ${i + 1}/${validItems.length}: ${issue.title}`);
-      
-      // Find status field
-      const statusField = item.fieldValues.nodes.find(
-        (field: any) => field.field?.name === 'Status'
-      );
-      
-      // Use AI extraction with caching and retry system
-      const extractedDate = await extractAvailabilityDateWithAI(issue.body || '', issue.title);
-      
-      // If extraction failed, add to retry queue
-      if (extractedDate === 'OpenAI extraction failed') {
-        addToRetryQueue(issue.title, issue.body || '');
-      }
-      
-      const roadmapItem: RoadmapItem = {
-        id: issue.id,
-        title: issue.title,
-        url: issue.url,
-        body: issue.body,
-        createdAt: issue.createdAt,
-        updatedAt: issue.updatedAt,
-        lastEditedAt: issue.lastEditedAt,
-        status: statusField?.name || 'Unknown',
-        labels: issue.labels.nodes.map((label: any) => ({
-          name: label.name,
-          color: label.color
-        })),
-        assignees: issue.assignees.nodes.map((assignee: any) => ({
-          login: assignee.login,
-          name: assignee.name,
-          avatarUrl: assignee.avatarUrl
-        })),
-        extractedDate
-      };
-      
-      roadmapItems.push(roadmapItem);
-      
-      // Add a small delay to avoid overwhelming the API and show progress
-      if (i % 10 === 0 && i > 0) {
-        console.log(`Processed ${i}/${validItems.length} items...`);
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      console.log(`Completed batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(validItems.length / CONCURRENCY_LIMIT)}, processed ${roadmapItems.length}/${validItems.length} items`);
     }
     
     console.log(`Completed processing ${roadmapItems.length} items with AI extraction.`);
