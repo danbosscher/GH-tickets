@@ -1174,36 +1174,63 @@ async function fetchAKSOpenIssues(): Promise<AKSIssue[]> {
 // Function to get roadmap issue IDs to filter them out
 async function getRoadmapIssueIds(): Promise<Set<string>> {
   try {
-    const query = `
-      query {
-        organization(login: "Azure") {
-          projectV2(number: 685) {
-            items(first: 100) {
-              nodes {
-                content {
-                  ... on Issue {
-                    id
-                    url
+    const issueIds = new Set<string>();
+    let hasNextPage = true;
+    let cursor: string | null = null;
+    let pageCount = 0;
+    const MAX_PAGES = 20; // Safety limit
+
+    while (hasNextPage && pageCount < MAX_PAGES) {
+      pageCount++;
+      const query = `
+        query($cursor: String) {
+          organization(login: "Azure") {
+            projectV2(number: 685) {
+              items(first: 100, after: $cursor) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  content {
+                    ... on Issue {
+                      id
+                      url
+                    }
                   }
                 }
               }
             }
           }
         }
+      `;
+      
+      const response: any = await graphqlWithAuth(query, { cursor });
+      const projectData = response?.organization?.projectV2?.items;
+      
+      if (!projectData) {
+        console.log('No more roadmap project data found');
+        break;
       }
-    `;
+      
+      const roadmapItems = projectData.nodes || [];
+      
+      roadmapItems.forEach((item: any) => {
+        if (item.content?.id) {
+          issueIds.add(item.content.id);
+        }
+      });
+      
+      hasNextPage = projectData.pageInfo.hasNextPage;
+      cursor = projectData.pageInfo.endCursor;
+      
+      console.log(`Fetched roadmap page ${pageCount}, found ${roadmapItems.length} items (total IDs: ${issueIds.size})`);
+      
+      // Add delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     
-    const response: any = await graphqlWithAuth(query);
-    const roadmapItems = response?.organization?.projectV2?.items?.nodes || [];
-    
-    const issueIds = new Set<string>();
-    roadmapItems.forEach((item: any) => {
-      if (item.content?.id) {
-        issueIds.add(item.content.id);
-      }
-    });
-    
-    console.log(`Found ${issueIds.size} roadmap issue IDs to filter out`);
+    console.log(`Found ${issueIds.size} roadmap issue IDs to filter out (${pageCount} pages)`);
     return issueIds;
   } catch (error) {
     console.error('Error fetching roadmap issue IDs:', error);

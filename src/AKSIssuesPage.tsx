@@ -439,7 +439,7 @@ const AKSIssuesPage: React.FC = () => {
                 className="dropdown-toggle"
                 onClick={() => setColumnsDropdownOpen(!columnsDropdownOpen)}
               >
-                Columns ({visibleColumns.size}/7) ▼
+                Columns ({visibleColumns.size}/8) ▼
               </button>
               {columnsDropdownOpen && (
                 <div className="dropdown-content">
