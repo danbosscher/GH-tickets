@@ -440,7 +440,36 @@ const AKSIssuesPage: React.FC = () => {
 
   const handleMouseEnter = (issueId: string, event: React.MouseEvent) => {
     setHoveredIssue(issueId);
-    setPopoverPosition({ x: event.clientX, y: event.clientY });
+    
+    // Smart positioning to prevent clipping
+    const popoverWidth = 400; // max-width from CSS
+    const popoverHeight = 300; // estimated height
+    const margin = 15; // margin from viewport edge
+    
+    let x = event.clientX + 10;
+    let y = event.clientY + 10;
+    
+    // Check right edge - if popover would go off screen, position it to the left of cursor
+    if (x + popoverWidth > window.innerWidth - margin) {
+      x = event.clientX - popoverWidth - 10;
+    }
+    
+    // Check bottom edge - if popover would go off screen, position it above cursor
+    if (y + popoverHeight > window.innerHeight - margin) {
+      y = event.clientY - popoverHeight - 10;
+    }
+    
+    // Ensure popover doesn't go off left edge
+    if (x < margin) {
+      x = margin;
+    }
+    
+    // Ensure popover doesn't go off top edge
+    if (y < margin) {
+      y = margin;
+    }
+    
+    setPopoverPosition({ x, y });
   };
 
   const handleMouseLeave = () => {
@@ -847,9 +876,12 @@ const AKSIssuesPage: React.FC = () => {
                               className="ai-summary-popover"
                               style={{
                                 position: 'fixed',
-                                top: popoverPosition.y + 10,
-                                left: popoverPosition.x + 10,
-                                zIndex: 1000
+                                top: popoverPosition.y,
+                                left: popoverPosition.x,
+                                zIndex: 1001,
+                                maxWidth: '400px',
+                                maxHeight: '300px',
+                                overflow: 'auto'
                               }}
                             >
                               <div className="ai-summary-content">
