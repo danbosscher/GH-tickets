@@ -70,7 +70,7 @@ const AKSIssuesPage: React.FC = () => {
       }
       
       // Set up Server-Sent Events for progress updates for both initial load and refresh
-      const eventSource = new EventSource('/api/progress');
+      const eventSource = new EventSource('/api/progress?type=aks');
       eventSource.onmessage = (event) => {
         try {
           const progressData = JSON.parse(event.data);

@@ -575,28 +575,32 @@ app.get('/api/progress', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('Access-Control-Allow-Origin', '*');
   
-  // Store the response object for progress updates
-  progressClients.add(res);
+  const requestType = req.query.type as string || 'roadmap'; // 'roadmap' or 'aks'
+  const clientId = `${requestType}_${Date.now()}_${Math.random()}`;
+  
+  // Store the response object with request type for progress updates
+  progressClients.set(clientId, { res, type: requestType });
   
   // Clean up on client disconnect
   req.on('close', () => {
-    progressClients.delete(res);
+    progressClients.delete(clientId);
   });
 });
 
 // Progress tracking
-const progressClients = new Set<any>();
-let currentProgress = { step: '', current: 0, total: 0 };
+const progressClients = new Map<string, { res: any, type: string }>();
 
-function sendProgress(step: string, current: number, total: number) {
-  currentProgress = { step, current, total };
-  const data = JSON.stringify(currentProgress);
+function sendProgress(step: string, current: number, total: number, requestType: string = 'roadmap') {
+  const data = JSON.stringify({ step, current, total });
   
-  progressClients.forEach(client => {
-    try {
-      client.write(`data: ${data}\n\n`);
-    } catch (error) {
-      progressClients.delete(client);
+  // Only send to clients of the same request type
+  progressClients.forEach((client, clientId) => {
+    if (client.type === requestType) {
+      try {
+        client.res.write(`data: ${data}\n\n`);
+      } catch (error) {
+        progressClients.delete(clientId);
+      }
     }
   });
 }
@@ -636,7 +640,7 @@ app.get('/api/roadmap', async (req, res) => {
     
     console.log(forceRefresh ? 'Force refresh requested, fetching fresh data...' : 'GitHub cache miss, fetching fresh data...');
     
-    sendProgress('Fetching GitHub data', 0, 100);
+    sendProgress('Fetching GitHub data', 0, 100, 'roadmap');
     
     let allItems: any[] = [];
     let hasNextPage = true;
@@ -647,7 +651,7 @@ app.get('/api/roadmap', async (req, res) => {
     const MAX_PAGES = 50; // Prevent excessive data fetching
     while (hasNextPage && pageCount < MAX_PAGES) {
       pageCount++;
-      sendProgress(`Fetching GitHub data (page ${pageCount})`, pageCount * 10, 100);
+      sendProgress(`Fetching GitHub data (page ${pageCount})`, pageCount * 10, 100, 'roadmap');
       const query = `
         query($cursor: String) {
           organization(login: "Azure") {
@@ -738,7 +742,7 @@ app.get('/api/roadmap', async (req, res) => {
     }
     
     console.log(`Total items fetched: ${allItems.length}`);
-    sendProgress('Processing items for AI extraction', 0, allItems.length);
+    sendProgress('Processing items for AI extraction', 0, allItems.length, 'roadmap');
 
     const validItems = allItems.filter((item: any) => item.content);
     
@@ -754,7 +758,7 @@ app.get('/api/roadmap', async (req, res) => {
         const globalIndex = i + batchIndex;
         const issue = item.content;
         
-        sendProgress(`Processing AI extraction (${globalIndex + 1}/${validItems.length})`, globalIndex + 1, validItems.length);
+        sendProgress(`Processing AI extraction (${globalIndex + 1}/${validItems.length})`, globalIndex + 1, validItems.length, 'roadmap');
         
         if (!issue || !issue.title) {
           console.log(`Skipping item ${globalIndex + 1}/${validItems.length} with no title:`, JSON.stringify(item, null, 2));
@@ -842,12 +846,12 @@ app.get('/api/roadmap', async (req, res) => {
     }
     
     console.log(`Completed processing ${roadmapItems.length} items with AI extraction.`);
-    sendProgress('Saving to cache', roadmapItems.length, roadmapItems.length);
+    sendProgress('Saving to cache', roadmapItems.length, roadmapItems.length, 'roadmap');
 
     // Save the processed data to GitHub cache
     saveGitHubCache(roadmapItems);
     
-    sendProgress('Complete', roadmapItems.length, roadmapItems.length);
+    sendProgress('Complete', roadmapItems.length, roadmapItems.length, 'roadmap');
 
     res.json(roadmapItems);
   } catch (error) {
@@ -1253,24 +1257,24 @@ app.get('/api/aks-issues', async (req, res) => {
     
     console.log(forceRefresh ? 'Force refresh requested for AKS issues, fetching fresh data...' : 'AKS issues cache miss, fetching fresh data...');
     
-    sendProgress('Fetching roadmap issue IDs to filter', 0, 100);
+    sendProgress('Fetching roadmap issue IDs to filter', 0, 100, 'aks');
     
     // Get roadmap issue IDs to filter out
     const roadmapIssueIds = await getRoadmapIssueIds();
     
-    sendProgress('Fetching AKS open issues', 10, 100);
+    sendProgress('Fetching AKS open issues', 10, 100, 'aks');
     
     // Fetch all AKS open issues
     const allIssues = await fetchAKSOpenIssues();
     
-    sendProgress('Filtering out roadmap issues', 30, 100);
+    sendProgress('Filtering out roadmap issues', 30, 100, 'aks');
     
     // Filter out roadmap issues
     const filteredIssues = allIssues.filter(issue => !roadmapIssueIds.has(issue.id));
     
     console.log(`Filtered out ${allIssues.length - filteredIssues.length} roadmap issues, processing ${filteredIssues.length} remaining issues`);
     
-    sendProgress('Starting AI analysis', 35, 100);
+    sendProgress('Starting AI analysis', 35, 100, 'aks');
     
     // Process AI analysis in batches
     const CONCURRENCY_LIMIT = 5; // Process 5 issues in parallel
@@ -1284,7 +1288,7 @@ app.get('/api/aks-issues', async (req, res) => {
         
         // Update progress for each issue processed
         const progressPercent = Math.round(35 + ((globalIndex / totalIssues) * 60)); // 35% to 95%
-        sendProgress(`Analyzing issue ${globalIndex + 1}/${totalIssues}: ${issue.title.substring(0, 40)}...`, progressPercent, 100);
+        sendProgress(`Analyzing issue ${globalIndex + 1}/${totalIssues}: ${issue.title.substring(0, 40)}...`, progressPercent, 100, 'aks');
         
         console.log(`Processing AI analysis for issue ${globalIndex + 1}/${filteredIssues.length}: ${issue.title.substring(0, 50)}...`);
         
@@ -1338,14 +1342,14 @@ app.get('/api/aks-issues', async (req, res) => {
       }
     }
     
-    sendProgress('Saving to cache', 95, 100);
+    sendProgress('Saving to cache', 95, 100, 'aks');
     
     // Save the processed data to AKS issues cache
     saveAKSIssuesCache(processedIssues);
     
     console.log(`Completed processing ${processedIssues.length} AKS issues`);
     
-    sendProgress('Complete', 100, 100);
+    sendProgress('Complete', 100, 100, 'aks');
     
     res.json(processedIssues);
   } catch (error) {
