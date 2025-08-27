@@ -41,7 +41,9 @@
       "Bash(docker run:*)",
       "Bash(git checkout:*)",
       "Bash(pkill:*)",
-      "Bash(sudo docker build:*)"
+      "Bash(sudo docker build:*)",
+      "Bash(az containerapp:*)",
+      "Bash(npm install react-router-dom @types/react-router-dom)"
     ],
     "deny": [],
     "ask": []

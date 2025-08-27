@@ -55,10 +55,79 @@ const AKSIssuesPage: React.FC = () => {
   const [popoverPosition, setPopoverPosition] = useState<{x: number, y: number}>({x: 0, y: 0});
   const [progress, setProgress] = useState<{step: string, current: number, total: number} | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [copyLinkSuccess, setCopyLinkSuccess] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAKSIssues();
+    fetchCacheInfo();
   }, []);
+
+  useEffect(() => {
+    if (issues.length > 0) {
+      // Check if URL has filter parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const hasUrlFilters = urlParams.toString().length > 0;
+      
+      // Get all unique values for comparison
+      const uniqueLabelsFromData = [...new Set(issues.flatMap(issue => issue.labels.map(label => label.name)))].sort();
+      const uniqueAssigneesFromData = [...new Set(issues.flatMap(issue => issue.assignees.map(assignee => assignee.name || assignee.login)))].sort();
+      
+      if (hasUrlFilters) {
+        // Load filters from URL
+        if (urlParams.has('labels')) {
+          const labels = urlParams.get('labels')?.split(',').filter(l => l) || [];
+          setSelectedLabels(new Set(labels));
+        } else {
+          // No labels param means all are selected
+          setSelectedLabels(new Set(uniqueLabelsFromData));
+        }
+        
+        if (urlParams.has('assignees')) {
+          const assignees = urlParams.get('assignees')?.split(',').filter(a => a) || [];
+          setSelectedAssignees(new Set(assignees));
+        } else {
+          // No assignees param means all are selected
+          setSelectedAssignees(new Set(uniqueAssigneesFromData));
+        }
+        
+        if (urlParams.has('unassigned')) {
+          setSelectedUnassigned(urlParams.get('unassigned') === 'true');
+        }
+        
+        if (urlParams.has('columns')) {
+          const columns = urlParams.get('columns')?.split(',').filter(c => c) || [];
+          setVisibleColumns(new Set(columns));
+        }
+      } else {
+        // Load from localStorage if no URL parameters
+        const savedLabels = localStorage.getItem('aksSelectedLabels');
+        const savedAssignees = localStorage.getItem('aksSelectedAssignees');
+        const savedUnassigned = localStorage.getItem('aksSelectedUnassigned');
+        const savedVisibleColumns = localStorage.getItem('aksVisibleColumns');
+        
+        if (savedLabels) {
+          setSelectedLabels(new Set(JSON.parse(savedLabels)));
+        } else {
+          setSelectedLabels(new Set(uniqueLabelsFromData));
+        }
+        
+        if (savedAssignees) {
+          setSelectedAssignees(new Set(JSON.parse(savedAssignees)));
+        } else {
+          setSelectedAssignees(new Set(uniqueAssigneesFromData));
+        }
+        
+        if (savedUnassigned) {
+          setSelectedUnassigned(JSON.parse(savedUnassigned));
+        }
+        
+        if (savedVisibleColumns) {
+          setVisibleColumns(new Set(JSON.parse(savedVisibleColumns)));
+        }
+      }
+    }
+  }, [issues]);
 
   const fetchAKSIssues = async (forceRefresh = false) => {
     let cleanup: (() => void) | null = null;
@@ -101,6 +170,10 @@ const AKSIssuesPage: React.FC = () => {
       const data = await response.json();
       setIssues(data);
       
+      if (forceRefresh) {
+        await fetchCacheInfo();
+      }
+      
       // Clean up when done
       cleanup?.();
     } catch (err) {
@@ -110,6 +183,93 @@ const AKSIssuesPage: React.FC = () => {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  };
+
+  const fetchCacheInfo = async () => {
+    try {
+      const response = await fetch('/api/cache-info?type=aks');
+      if (response.ok) {
+        const data = await response.json();
+        setLastUpdated(data.lastUpdated);
+      }
+    } catch (err) {
+      console.error('Failed to fetch cache info:', err);
+    }
+  };
+
+  const isDataRecent = () => {
+    if (!lastUpdated) return false;
+    const updated = new Date(lastUpdated);
+    const now = new Date();
+    const diffMinutes = (now.getTime() - updated.getTime()) / (1000 * 60);
+    return diffMinutes < 1;
+  };
+
+  const handleRefresh = () => {
+    if (isDataRecent() && !refreshing) {
+      if (!confirm('Data was refreshed less than a minute ago. This will take about a minute to complete. Are you sure?')) {
+        return;
+      }
+    }
+    fetchAKSIssues(true);
+  };
+
+  const formatTimestamp = (isoString: string) => {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diffTime = Math.abs(now.getTime() - date.getTime());
+    const diffHours = Math.floor(diffTime / (1000 * 60 * 60));
+    const diffMinutes = Math.floor((diffTime % (1000 * 60 * 60)) / (1000 * 60));
+    
+    return `refreshed ${diffHours} hours ${diffMinutes} minutes ago`;
+  };
+
+  const copyCurrentFiltersAsUrl = async () => {
+    const url = new URL(window.location.href);
+    url.search = '';
+    
+    const params = new URLSearchParams();
+    
+    // Only include labels if not all are selected
+    if (selectedLabels.size > 0 && selectedLabels.size < uniqueLabels.length) {
+      params.set('labels', Array.from(selectedLabels).join(','));
+    }
+    
+    // Only include assignees if not all are selected
+    if (selectedAssignees.size > 0 && selectedAssignees.size < uniqueAssignees.length) {
+      params.set('assignees', Array.from(selectedAssignees).join(','));
+    }
+    
+    // Only include boolean filters if they're true (non-default)
+    if (selectedUnassigned) {
+      params.set('unassigned', 'true');
+    }
+    
+    // Only include columns if not the default set
+    const defaultColumns = new Set(['title', 'labels', 'assignees', 'created', 'updated', 'lastComment', 'needsResponse', 'ai']);
+    if (visibleColumns.size !== defaultColumns.size || 
+        !Array.from(visibleColumns).every(col => defaultColumns.has(col))) {
+      params.set('columns', Array.from(visibleColumns).join(','));
+    }
+    
+    url.search = params.toString();
+    
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      setCopyLinkSuccess(true);
+      setTimeout(() => setCopyLinkSuccess(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err);
+      // Fallback for browsers that don't support clipboard API
+      const textArea = document.createElement('textarea');
+      textArea.value = url.toString();
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopyLinkSuccess(true);
+      setTimeout(() => setCopyLinkSuccess(false), 2000);
     }
   };
 
@@ -194,13 +354,16 @@ const AKSIssuesPage: React.FC = () => {
       newSelected.add(label);
     }
     setSelectedLabels(newSelected);
+    localStorage.setItem('aksSelectedLabels', JSON.stringify([...newSelected]));
   };
 
   const handleLabelSelectAll = () => {
     if (selectedLabels.size === uniqueLabels.length) {
       setSelectedLabels(new Set());
+      localStorage.setItem('aksSelectedLabels', JSON.stringify([]));
     } else {
       setSelectedLabels(new Set(uniqueLabels));
+      localStorage.setItem('aksSelectedLabels', JSON.stringify(uniqueLabels));
     }
   };
 
@@ -212,18 +375,23 @@ const AKSIssuesPage: React.FC = () => {
       newSelected.add(assignee);
     }
     setSelectedAssignees(newSelected);
+    localStorage.setItem('aksSelectedAssignees', JSON.stringify([...newSelected]));
   };
 
   const handleAssigneeSelectAll = () => {
     if (selectedAssignees.size === uniqueAssignees.length) {
       setSelectedAssignees(new Set());
+      localStorage.setItem('aksSelectedAssignees', JSON.stringify([]));
     } else {
       setSelectedAssignees(new Set(uniqueAssignees));
+      localStorage.setItem('aksSelectedAssignees', JSON.stringify(uniqueAssignees));
     }
   };
 
   const handleUnassignedToggle = () => {
-    setSelectedUnassigned(!selectedUnassigned);
+    const newValue = !selectedUnassigned;
+    setSelectedUnassigned(newValue);
+    localStorage.setItem('aksSelectedUnassigned', JSON.stringify(newValue));
   };
 
   const handleColumnToggle = (column: string) => {
@@ -234,6 +402,7 @@ const AKSIssuesPage: React.FC = () => {
       newVisible.add(column);
     }
     setVisibleColumns(newVisible);
+    localStorage.setItem('aksVisibleColumns', JSON.stringify([...newVisible]));
   };
 
   const handleSort = (field: string) => {
@@ -316,12 +485,24 @@ const AKSIssuesPage: React.FC = () => {
           <div className="title-section">
             <h1>Azure AKS Open Issues Analysis</h1>
             <p>Analyzing all open issues from Azure/AKS repository (~600 issues)</p>
+            {lastUpdated && (
+              <div className="timestamp">
+                {formatTimestamp(lastUpdated)}
+              </div>
+            )}
           </div>
           <div className="header-buttons">
             <button 
-              className="refresh-button-small"
-              onClick={() => fetchAKSIssues(true)}
-              disabled={refreshing}
+              className="copy-link-button"
+              onClick={copyCurrentFiltersAsUrl}
+              title="Copy current filters as URL"
+            >
+              {copyLinkSuccess ? '✓ Copied!' : '🔗 Copy Link'}
+            </button>
+            <button 
+              className={`refresh-button-small ${isDataRecent() ? 'disabled' : ''}`}
+              onClick={handleRefresh}
+              disabled={refreshing || isDataRecent()}
             >
               {refreshing ? '⟳' : '↻'}
             </button>

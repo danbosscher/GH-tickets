@@ -606,18 +606,34 @@ function sendProgress(step: string, current: number, total: number, requestType:
 }
 app.get('/api/cache-info', (req, res) => {
   try {
-    const githubCache = loadGitHubCache();
+    const requestType = req.query.type as string || 'roadmap'; // 'roadmap' or 'aks'
     
-    if (githubCache) {
-      res.json({
-        lastUpdated: githubCache.lastUpdated,
-        isCached: true
-      });
+    if (requestType === 'aks') {
+      const aksCache = loadAKSIssuesCache();
+      if (aksCache) {
+        res.json({
+          lastUpdated: aksCache.lastUpdated,
+          isCached: true
+        });
+      } else {
+        res.json({
+          lastUpdated: null,
+          isCached: false
+        });
+      }
     } else {
-      res.json({
-        lastUpdated: null,
-        isCached: false
-      });
+      const githubCache = loadGitHubCache();
+      if (githubCache) {
+        res.json({
+          lastUpdated: githubCache.lastUpdated,
+          isCached: true
+        });
+      } else {
+        res.json({
+          lastUpdated: null,
+          isCached: false
+        });
+      }
     }
   } catch (error) {
     console.error('Error getting cache info:', error);
