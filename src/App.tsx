@@ -69,17 +69,59 @@ const App: React.FC = () => {
   useEffect(() => {
     fetchRoadmapData();
     fetchCacheInfo();
-    loadFiltersFromUrl();
   }, []);
 
   useEffect(() => {
     if (items.length > 0) {
-      // Only load from localStorage if URL params are not present
+      // Check if URL has filter parameters
       const urlParams = new URLSearchParams(window.location.search);
-      const hasUrlFilters = urlParams.has('statuses') || urlParams.has('labels') || urlParams.has('assignees') || urlParams.has('needsResponse') || urlParams.has('unassigned') || urlParams.has('columns');
+      const hasUrlFilters = urlParams.toString().length > 0;
       
-      if (!hasUrlFilters) {
-        // Load saved filters from localStorage
+      // Get all unique values for comparison
+      const uniqueStatuses = [...new Set(items.map(item => item.status))];
+      const uniqueLabels = [...new Set(items.flatMap(item => item.labels.map(label => label.name)))];
+      const uniqueAssignees = [...new Set(items.flatMap(item => item.assignees.map(assignee => assignee.name || assignee.login)))];
+      
+      if (hasUrlFilters) {
+        // Load filters from URL
+        if (urlParams.has('statuses')) {
+          const statuses = urlParams.get('statuses')?.split(',').filter(s => s) || [];
+          setSelectedStatuses(new Set(statuses));
+        } else {
+          // No statuses param means all are selected
+          setSelectedStatuses(new Set(uniqueStatuses));
+        }
+        
+        if (urlParams.has('labels')) {
+          const labels = urlParams.get('labels')?.split(',').filter(l => l) || [];
+          setSelectedLabels(new Set(labels));
+        } else {
+          // No labels param means all are selected
+          setSelectedLabels(new Set(uniqueLabels));
+        }
+        
+        if (urlParams.has('assignees')) {
+          const assignees = urlParams.get('assignees')?.split(',').filter(a => a) || [];
+          setSelectedAssignees(new Set(assignees));
+        } else {
+          // No assignees param means all are selected
+          setSelectedAssignees(new Set(uniqueAssignees));
+        }
+        
+        if (urlParams.has('needsResponse')) {
+          setSelectedNeedsResponse(urlParams.get('needsResponse') === 'true');
+        }
+        
+        if (urlParams.has('unassigned')) {
+          setSelectedUnassigned(urlParams.get('unassigned') === 'true');
+        }
+        
+        if (urlParams.has('columns')) {
+          const columns = urlParams.get('columns')?.split(',').filter(c => c) || [];
+          setVisibleColumns(new Set(columns));
+        }
+      } else {
+        // Load from localStorage if no URL parameters
         const savedStatuses = localStorage.getItem('selectedStatuses');
         const savedLabels = localStorage.getItem('selectedLabels');
         const savedAssignees = localStorage.getItem('selectedAssignees');
@@ -91,7 +133,6 @@ const App: React.FC = () => {
           setSelectedStatuses(new Set(JSON.parse(savedStatuses)));
         } else {
           // Set default selected statuses (exclude Archive, Backlog, and GA)
-          const uniqueStatuses = [...new Set(items.map(item => item.status))];
           const defaultStatuses = uniqueStatuses.filter(status => 
             !status.toLowerCase().includes('archive') && 
             !status.toLowerCase().includes('backlog') &&
@@ -104,16 +145,12 @@ const App: React.FC = () => {
         if (savedLabels) {
           setSelectedLabels(new Set(JSON.parse(savedLabels)));
         } else {
-          // Set default selected labels (all labels)
-          const uniqueLabels = [...new Set(items.flatMap(item => item.labels.map(label => label.name)))]
           setSelectedLabels(new Set(uniqueLabels));
         }
         
         if (savedAssignees) {
           setSelectedAssignees(new Set(JSON.parse(savedAssignees)));
         } else {
-          // Set default selected assignees (all assignees)
-          const uniqueAssignees = [...new Set(items.flatMap(item => item.assignees.map(assignee => assignee.name || assignee.login)))]
           setSelectedAssignees(new Set(uniqueAssignees));
         }
         
@@ -435,56 +472,28 @@ const App: React.FC = () => {
     return sortDirection === 'asc' ? ' ↑' : ' ↓';
   };
 
-  const loadFiltersFromUrl = () => {
-    const urlParams = new URLSearchParams(window.location.search);
-    
-    if (urlParams.has('statuses')) {
-      const statuses = urlParams.get('statuses')?.split(',').filter(s => s) || [];
-      setSelectedStatuses(new Set(statuses));
-    }
-    
-    if (urlParams.has('labels')) {
-      const labels = urlParams.get('labels')?.split(',').filter(l => l) || [];
-      setSelectedLabels(new Set(labels));
-    }
-    
-    if (urlParams.has('assignees')) {
-      const assignees = urlParams.get('assignees')?.split(',').filter(a => a) || [];
-      setSelectedAssignees(new Set(assignees));
-    }
-    
-    if (urlParams.has('needsResponse')) {
-      setSelectedNeedsResponse(urlParams.get('needsResponse') === 'true');
-    }
-    
-    if (urlParams.has('unassigned')) {
-      setSelectedUnassigned(urlParams.get('unassigned') === 'true');
-    }
-    
-    if (urlParams.has('columns')) {
-      const columns = urlParams.get('columns')?.split(',').filter(c => c) || [];
-      setVisibleColumns(new Set(columns));
-    }
-  };
-
   const copyCurrentFiltersAsUrl = async () => {
     const url = new URL(window.location.href);
     url.search = '';
     
     const params = new URLSearchParams();
     
-    if (selectedStatuses.size > 0) {
+    // Only include statuses if not all are selected
+    if (selectedStatuses.size > 0 && selectedStatuses.size < uniqueStatuses.length) {
       params.set('statuses', Array.from(selectedStatuses).join(','));
     }
     
-    if (selectedLabels.size > 0) {
+    // Only include labels if not all are selected
+    if (selectedLabels.size > 0 && selectedLabels.size < uniqueLabels.length) {
       params.set('labels', Array.from(selectedLabels).join(','));
     }
     
-    if (selectedAssignees.size > 0) {
+    // Only include assignees if not all are selected
+    if (selectedAssignees.size > 0 && selectedAssignees.size < uniqueAssignees.length) {
       params.set('assignees', Array.from(selectedAssignees).join(','));
     }
     
+    // Only include boolean filters if they're true (non-default)
     if (selectedNeedsResponse) {
       params.set('needsResponse', 'true');
     }
@@ -493,7 +502,10 @@ const App: React.FC = () => {
       params.set('unassigned', 'true');
     }
     
-    if (visibleColumns.size > 0) {
+    // Only include columns if not the default set
+    const defaultColumns = new Set(['title', 'labels', 'assignees', 'created', 'updated', 'timeline', 'lastComment', 'needsResponse']);
+    if (visibleColumns.size !== defaultColumns.size || 
+        !Array.from(visibleColumns).every(col => defaultColumns.has(col))) {
       params.set('columns', Array.from(visibleColumns).join(','));
     }
     
@@ -985,7 +997,7 @@ const App: React.FC = () => {
                   <td>
                     {item.extractedEta ? (
                       <a 
-                        href={`${item.extractedEta.url}#:~:text=${encodeURIComponent(item.extractedEta.commentText.substring(0, 100))}`}
+                        href={item.extractedEta.url}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="extracted-date"
