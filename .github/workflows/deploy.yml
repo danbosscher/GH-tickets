@@ -103,8 +103,8 @@ jobs:
             --username ${{ github.actor }} \
             --password ${{ secrets.GITHUB_TOKEN }}
 
-          # Create new revision with updated image
-          az containerapp revision copy \
+          # Update the container app with new image and force restart
+          az containerapp update \
             --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --image $IMAGE_TAG \
