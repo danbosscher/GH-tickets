@@ -80,7 +80,8 @@ const AKSIssuesPage: React.FC = () => {
         }
       };
       
-      eventSource.onerror = () => {
+      eventSource.onerror = (error) => {
+        console.error('EventSource error:', error);
         eventSource.close();
       };
       
@@ -90,7 +91,7 @@ const AKSIssuesPage: React.FC = () => {
         setProgress(null);
       };
       
-      setTimeout(() => cleanup?.(), 30000); // Cleanup after 30 seconds max
+      setTimeout(() => cleanup?.(), 600000); // Cleanup after 10 minutes (AKS processing can take a long time)
       
       const url = forceRefresh ? '/api/aks-issues?refresh=true' : '/api/aks-issues';
       const response = await fetch(url);

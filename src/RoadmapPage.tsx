@@ -199,7 +199,7 @@ const RoadmapPage: React.FC = () => {
         setProgress(null);
       };
       
-      setTimeout(() => cleanup?.(), 30000); // Cleanup after 30 seconds max
+      setTimeout(() => cleanup?.(), 600000); // Cleanup after 10 minutes
       
       const url = forceRefresh ? '/api/roadmap?refresh=true' : '/api/roadmap';
       const response = await fetch(url);
