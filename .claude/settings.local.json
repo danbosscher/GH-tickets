@@ -40,7 +40,8 @@
       "Bash(sudo docker stop:*)",
       "Bash(docker run:*)",
       "Bash(git checkout:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(sudo docker build:*)"
     ],
     "deny": [],
     "ask": []

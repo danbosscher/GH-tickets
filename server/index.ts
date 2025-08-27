@@ -148,6 +148,12 @@ interface RoadmapItem {
     avatarUrl: string;
   }>;
   extractedDate: string | null;
+  extractedEta?: {
+    date: string;
+    author: string;
+    commentText: string;
+    url: string;
+  } | null;
   lastComment?: {
     createdAt: string;
     author: {
@@ -259,6 +265,206 @@ function extractAvailabilityDateFallback(body: string): string | null {
   }
 
   return null;
+}
+
+// Function to fetch all comments for an issue if it has more than 100
+async function fetchAllComments(issueId: string, initialComments: any[], hasNextPage: boolean, endCursor: string): Promise<any[]> {
+  if (!hasNextPage) return initialComments;
+  
+  let allComments = [...initialComments];
+  let cursor = endCursor;
+  let hasMore = hasNextPage;
+  
+  while (hasMore) {
+    try {
+      const query = `
+        query($issueId: ID!, $cursor: String) {
+          node(id: $issueId) {
+            ... on Issue {
+              comments(first: 100, after: $cursor) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  id
+                  createdAt
+                  body
+                  author {
+                    login
+                    ... on User {
+                      name
+                    }
+                  }
+                  url
+                }
+              }
+            }
+          }
+        }
+      `;
+      
+      const response: any = await graphqlWithAuth(query, { issueId, cursor });
+      const commentsData = response.node.comments;
+      
+      allComments.push(...commentsData.nodes);
+      hasMore = commentsData.pageInfo.hasNextPage;
+      cursor = commentsData.pageInfo.endCursor;
+      
+      console.log(`Fetched additional ${commentsData.nodes.length} comments for issue. Total: ${allComments.length}`);
+      
+      // Add small delay to avoid overwhelming GitHub API
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } catch (error) {
+      console.error('Error fetching additional comments:', error);
+      break;
+    }
+  }
+  
+  return allComments;
+}
+
+// Function to extract ETA from Microsoft assignees' comments using OpenAI
+async function extractEtaFromComments(comments: any[], assigneeLogins: string[], title: string): Promise<{
+  date: string;
+  author: string;
+  commentText: string;
+  url: string;
+} | null> {
+  if (!comments || comments.length === 0) return null;
+  
+  // Filter comments from Microsoft assignees only
+  const msComments = comments.filter(comment => 
+    comment.author && 
+    comment.body && 
+    comment.body.trim().length > 0 &&
+    assigneeLogins.includes(comment.author.login)
+  );
+  
+  if (msComments.length === 0) return null;
+  
+  // Create cache key using title + comment count + total length
+  const totalLength = msComments.reduce((sum, comment) => sum + comment.body.length, 0);
+  const cacheKey = `eta_${title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)}_${msComments.length}_${totalLength}`;
+  
+  // Check cache first
+  const cached = loadAICache(cacheKey);
+  if (cached && isCacheValid(cached)) {
+    if (cached.failed) {
+      const oneMinute = 60 * 1000;
+      if (Date.now() - cached.timestamp < oneMinute) {
+        console.log(`Recent ETA extraction failure for: ${title.substring(0, 50)}... (will retry later)`);
+        return null;
+      }
+      console.log(`Retrying failed ETA extraction for: ${title.substring(0, 50)}...`);
+    } else {
+      console.log(`ETA cache hit for: ${title.substring(0, 50)}...`);
+      if (cached.result) {
+        try {
+          return JSON.parse(cached.result);
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+  }
+  
+  try {
+    // Combine all comment bodies from Microsoft assignees
+    const combinedComments = msComments
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .map((comment, index) => `Comment ${index + 1} by ${comment.author.name || comment.author.login} (${comment.createdAt}):\n${comment.body}`)
+      .join('\n\n---\n\n');
+    
+    const prompt = `You are analyzing Azure AKS roadmap issue comments to extract the most recent ETA/timeline from Microsoft team members.
+
+Task: Find the LATEST/MOST RECENT estimated timeline or delivery date mentioned by Microsoft team members in these comments.
+
+Look for:
+- Specific dates (e.g., "March 2024", "Q2 2024", "by end of year")
+- Relative timeframes (e.g., "next quarter", "later this year", "in a few months")
+- Release stages with timing (e.g., "preview in Q1", "GA in summer")
+- Target dates, delivery estimates, expected timelines
+
+Issue Title: ${title}
+
+Microsoft Team Comments (newest first):
+${combinedComments}
+
+Instructions:
+- Only extract information about when the feature will be available to customers
+- Return the MOST RECENT timeline mentioned (prefer newer comments over older ones)
+- If multiple timelines are mentioned in the same comment, prefer the most specific one
+- Return "None" if no timeline is mentioned
+- Respond with ONLY a JSON object in this exact format:
+{"date": "extracted date or None", "text": "the specific sentence/phrase containing the date or None"}
+
+Examples:
+{"date": "Q2 2024", "text": "We're targeting Q2 2024 for general availability"}
+{"date": "None", "text": "None"}
+
+JSON Response:`;
+
+    console.log(`ETA extraction via OpenAI for: ${title.substring(0, 50)}... (${msComments.length} comments)`);
+    const response = await openai.chat.completions.create({
+      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful assistant that extracts timeline information from technical discussions. Always respond with valid JSON only.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      max_tokens: 200,
+      temperature: 0.1
+    });
+
+    const result = response.choices[0]?.message?.content?.trim();
+    
+    if (!result) {
+      saveAICache(cacheKey, null, false);
+      return null;
+    }
+    
+    try {
+      const parsed = JSON.parse(result);
+      
+      if (!parsed.date || parsed.date === 'None' || !parsed.text || parsed.text === 'None') {
+        saveAICache(cacheKey, null, false);
+        return null;
+      }
+      
+      // Find the comment that contains this text to get the author and URL
+      const sourceComment = msComments.find(comment => 
+        comment.body.toLowerCase().includes(parsed.text.toLowerCase()) ||
+        parsed.text.toLowerCase().includes(comment.body.substring(0, 100).toLowerCase())
+      );
+      
+      const finalResult = {
+        date: parsed.date,
+        author: sourceComment ? (sourceComment.author.name || sourceComment.author.login) : 'Microsoft Team',
+        commentText: parsed.text,
+        url: sourceComment ? sourceComment.url : msComments[0]?.url || '#'
+      };
+      
+      // Save successful result to cache
+      saveAICache(cacheKey, JSON.stringify(finalResult), false);
+      
+      return finalResult;
+    } catch (parseError) {
+      console.error('Failed to parse ETA extraction result:', parseError, 'Result:', result);
+      saveAICache(cacheKey, null, true);
+      return null;
+    }
+  } catch (error) {
+    console.error('ETA extraction failed:', error);
+    saveAICache(cacheKey, null, true);
+    return null;
+  }
 }
 
 // Add progress tracking endpoint
@@ -375,15 +581,22 @@ app.get('/api/roadmap', async (req, res) => {
                           avatarUrl
                         }
                       }
-                      comments(last: 1) {
+                      comments(first: 100) {
+                        pageInfo {
+                          hasNextPage
+                          endCursor
+                        }
                         nodes {
+                          id
                           createdAt
+                          body
                           author {
                             login
                             ... on User {
                               name
                             }
                           }
+                          url
                         }
                       }
                     }
@@ -457,18 +670,32 @@ app.get('/api/roadmap', async (req, res) => {
           addToRetryQueue(issue.title, issue.body || '');
         }
         
-        // Get last comment info
-        const lastComment = issue.comments.nodes.length > 0 && issue.comments.nodes[0].author ? {
-          createdAt: issue.comments.nodes[0].createdAt,
+        // Fetch all comments if there are more than 100
+        let allComments = issue.comments.nodes;
+        if (issue.comments.pageInfo.hasNextPage) {
+          console.log(`Issue ${issue.title} has more than 100 comments, fetching all...`);
+          allComments = await fetchAllComments(issue.id, issue.comments.nodes, issue.comments.pageInfo.hasNextPage, issue.comments.pageInfo.endCursor);
+        }
+        
+        // Extract ETA from Microsoft assignees' comments
+        const allAssigneeLogins = issue.assignees.nodes.map((assignee: any) => assignee.login);
+        const extractedEta = await extractEtaFromComments(allComments, allAssigneeLogins, issue.title);
+        
+        // Get last comment info (sort all comments by date)
+        const sortedComments = allComments
+          .filter((comment: any) => comment.author)
+          .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        
+        const lastComment = sortedComments.length > 0 ? {
+          createdAt: sortedComments[0].createdAt,
           author: {
-            login: issue.comments.nodes[0].author.login,
-            name: issue.comments.nodes[0].author.name || null
+            login: sortedComments[0].author.login,
+            name: sortedComments[0].author.name || null
           }
         } : null;
         
         // Determine if needs response from team
-        const allAssigneeLogins = issue.assignees.nodes.map((assignee: any) => assignee.login);
-        const needsResponse = lastComment && !allAssigneeLogins.includes(lastComment.author.login);
+        const needsResponse = lastComment ? !allAssigneeLogins.includes(lastComment.author.login) : false;
         
         const roadmapItem: RoadmapItem = {
           id: issue.id,
@@ -489,6 +716,7 @@ app.get('/api/roadmap', async (req, res) => {
             avatarUrl: assignee.avatarUrl
           })),
           extractedDate,
+          extractedEta,
           lastComment,
           needsResponse
         };

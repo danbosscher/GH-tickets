@@ -19,6 +19,12 @@ interface RoadmapItem {
     avatarUrl: string;
   }>;
   extractedDate: string | null;
+  extractedEta?: {
+    date: string;
+    author: string;
+    commentText: string;
+    url: string;
+  } | null;
   lastComment?: {
     createdAt: string;
     author: {
@@ -731,7 +737,7 @@ const App: React.FC = () => {
                         checked={visibleColumns.has('timeline')}
                         onChange={() => handleColumnToggle('timeline')}
                       />
-                      <span>Customer Timeline</span>
+                      <span>ETA</span>
                     </label>
                   </div>
                 </div>
@@ -775,7 +781,7 @@ const App: React.FC = () => {
                 <th>Needs response</th>
               )}
               {visibleColumns.has('timeline') && (
-                <th>Customer Timeline</th>
+                <th>ETA</th>
               )}
             </tr>
           </thead>
@@ -878,7 +884,17 @@ const App: React.FC = () => {
                 )}
                 {visibleColumns.has('timeline') && (
                   <td>
-                    {item.extractedDate ? (
+                    {item.extractedEta ? (
+                      <a 
+                        href={`${item.extractedEta.url}#:~:text=${encodeURIComponent(item.extractedEta.commentText.substring(0, 100))}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="extracted-date"
+                        title={`ETA from ${item.extractedEta.author}: ${item.extractedEta.commentText}`}
+                      >
+                        {item.extractedEta.date}
+                      </a>
+                    ) : item.extractedDate ? (
                       <div className={`extracted-date ${item.extractedDate === 'OpenAI extraction failed' ? 'extraction-failed' : ''}`}>
                         {item.extractedDate}
                       </div>
@@ -886,7 +902,7 @@ const App: React.FC = () => {
                       !item.status.toLowerCase().includes('backlog') && 
                       !item.status.toLowerCase().includes('archive') ? (
                         <span style={{ color: '#999', fontSize: '12px' }}>
-                          No timeline found
+                          No ETA found
                         </span>
                       ) : null
                     )}

@@ -332,12 +332,26 @@ body {
   border-radius: 4px;
   margin-top: 4px;
   display: inline-block;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.extracted-date:hover {
+  background: #ffeaa7;
+  text-decoration: underline;
 }
 
 .extracted-date.extraction-failed {
   background: #fff5f5;
   color: #c53030;
   border: 1px solid #feb2b2;
+  cursor: default;
+}
+
+.extracted-date.extraction-failed:hover {
+  background: #fff5f5;
+  text-decoration: none;
 }
 
 .issue-title {
