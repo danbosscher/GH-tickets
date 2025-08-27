@@ -43,7 +43,9 @@
       "Bash(pkill:*)",
       "Bash(sudo docker build:*)",
       "Bash(az containerapp:*)",
-      "Bash(npm install react-router-dom @types/react-router-dom)"
+      "Bash(npm install react-router-dom @types/react-router-dom)",
+      "Bash(PORT=3001 NODE_ENV=development node dist/server/index.js)",
+      "Bash(PORT=3002 NODE_ENV=development node dist/server/index.js)"
     ],
     "deny": [],
     "ask": []

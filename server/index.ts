@@ -666,6 +666,8 @@ app.get('/api/roadmap', async (req, res) => {
       const cachedData = loadGitHubCache();
       if (cachedData) {
         console.log('Serving GitHub data from cache');
+        // Send progress update for cache hit to close any waiting EventSource connections
+        sendProgress('Loaded from cache', 100, 100, 'roadmap');
         return res.json(cachedData.data);
       }
     }
@@ -1285,6 +1287,8 @@ app.get('/api/aks-issues', async (req, res) => {
       const cachedData = loadAKSIssuesCache();
       if (cachedData) {
         console.log('Serving AKS issues data from cache');
+        // Send progress update for cache hit to close any waiting EventSource connections
+        sendProgress('Loaded from cache', 100, 100, 'aks');
         return res.json(cachedData.data);
       }
     }
