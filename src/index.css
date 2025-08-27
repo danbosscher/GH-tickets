@@ -37,10 +37,31 @@ body {
   flex: 1;
 }
 
+.header-buttons {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.copy-link-button {
+  background: #28a745;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.copy-link-button:hover {
+  background: #218838;
+  transform: scale(1.02);
+}
+
 .refresh-button-small {
-  position: absolute;
-  top: 0;
-  right: 0;
   width: 32px;
   height: 32px;
   background: #0078d4;

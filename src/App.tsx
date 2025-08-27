@@ -56,6 +56,7 @@ const App: React.FC = () => {
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [progress, setProgress] = useState<{step: string, current: number, total: number} | null>(null);
+  const [copyLinkSuccess, setCopyLinkSuccess] = useState(false);
 
   const isDataRecent = () => {
     if (!lastUpdated) return false;
@@ -68,58 +69,65 @@ const App: React.FC = () => {
   useEffect(() => {
     fetchRoadmapData();
     fetchCacheInfo();
+    loadFiltersFromUrl();
   }, []);
 
   useEffect(() => {
     if (items.length > 0) {
-      // Load saved filters from localStorage
-      const savedStatuses = localStorage.getItem('selectedStatuses');
-      const savedLabels = localStorage.getItem('selectedLabels');
-      const savedAssignees = localStorage.getItem('selectedAssignees');
-      const savedNeedsResponse = localStorage.getItem('selectedNeedsResponse');
-      const savedUnassigned = localStorage.getItem('selectedUnassigned');
-      const savedVisibleColumns = localStorage.getItem('visibleColumns');
+      // Only load from localStorage if URL params are not present
+      const urlParams = new URLSearchParams(window.location.search);
+      const hasUrlFilters = urlParams.has('statuses') || urlParams.has('labels') || urlParams.has('assignees') || urlParams.has('needsResponse') || urlParams.has('unassigned') || urlParams.has('columns');
       
-      if (savedStatuses) {
-        setSelectedStatuses(new Set(JSON.parse(savedStatuses)));
-      } else {
-        // Set default selected statuses (exclude Archive, Backlog, and GA)
-        const uniqueStatuses = [...new Set(items.map(item => item.status))];
-        const defaultStatuses = uniqueStatuses.filter(status => 
-          !status.toLowerCase().includes('archive') && 
-          !status.toLowerCase().includes('backlog') &&
-          !status.toLowerCase().includes('ga') &&
-          !status.toLowerCase().includes('generally available')
-        );
-        setSelectedStatuses(new Set(defaultStatuses));
-      }
-      
-      if (savedLabels) {
-        setSelectedLabels(new Set(JSON.parse(savedLabels)));
-      } else {
-        // Set default selected labels (all labels)
-        const uniqueLabels = [...new Set(items.flatMap(item => item.labels.map(label => label.name)))]
-        setSelectedLabels(new Set(uniqueLabels));
-      }
-      
-      if (savedAssignees) {
-        setSelectedAssignees(new Set(JSON.parse(savedAssignees)));
-      } else {
-        // Set default selected assignees (all assignees)
-        const uniqueAssignees = [...new Set(items.flatMap(item => item.assignees.map(assignee => assignee.name || assignee.login)))]
-        setSelectedAssignees(new Set(uniqueAssignees));
-      }
-      
-      if (savedNeedsResponse) {
-        setSelectedNeedsResponse(JSON.parse(savedNeedsResponse));
-      }
-      
-      if (savedUnassigned) {
-        setSelectedUnassigned(JSON.parse(savedUnassigned));
-      }
-      
-      if (savedVisibleColumns) {
-        setVisibleColumns(new Set(JSON.parse(savedVisibleColumns)));
+      if (!hasUrlFilters) {
+        // Load saved filters from localStorage
+        const savedStatuses = localStorage.getItem('selectedStatuses');
+        const savedLabels = localStorage.getItem('selectedLabels');
+        const savedAssignees = localStorage.getItem('selectedAssignees');
+        const savedNeedsResponse = localStorage.getItem('selectedNeedsResponse');
+        const savedUnassigned = localStorage.getItem('selectedUnassigned');
+        const savedVisibleColumns = localStorage.getItem('visibleColumns');
+        
+        if (savedStatuses) {
+          setSelectedStatuses(new Set(JSON.parse(savedStatuses)));
+        } else {
+          // Set default selected statuses (exclude Archive, Backlog, and GA)
+          const uniqueStatuses = [...new Set(items.map(item => item.status))];
+          const defaultStatuses = uniqueStatuses.filter(status => 
+            !status.toLowerCase().includes('archive') && 
+            !status.toLowerCase().includes('backlog') &&
+            !status.toLowerCase().includes('ga') &&
+            !status.toLowerCase().includes('generally available')
+          );
+          setSelectedStatuses(new Set(defaultStatuses));
+        }
+        
+        if (savedLabels) {
+          setSelectedLabels(new Set(JSON.parse(savedLabels)));
+        } else {
+          // Set default selected labels (all labels)
+          const uniqueLabels = [...new Set(items.flatMap(item => item.labels.map(label => label.name)))]
+          setSelectedLabels(new Set(uniqueLabels));
+        }
+        
+        if (savedAssignees) {
+          setSelectedAssignees(new Set(JSON.parse(savedAssignees)));
+        } else {
+          // Set default selected assignees (all assignees)
+          const uniqueAssignees = [...new Set(items.flatMap(item => item.assignees.map(assignee => assignee.name || assignee.login)))]
+          setSelectedAssignees(new Set(uniqueAssignees));
+        }
+        
+        if (savedNeedsResponse) {
+          setSelectedNeedsResponse(JSON.parse(savedNeedsResponse));
+        }
+        
+        if (savedUnassigned) {
+          setSelectedUnassigned(JSON.parse(savedUnassigned));
+        }
+        
+        if (savedVisibleColumns) {
+          setVisibleColumns(new Set(JSON.parse(savedVisibleColumns)));
+        }
       }
     }
   }, [items]);
@@ -427,6 +435,88 @@ const App: React.FC = () => {
     return sortDirection === 'asc' ? ' ↑' : ' ↓';
   };
 
+  const loadFiltersFromUrl = () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    
+    if (urlParams.has('statuses')) {
+      const statuses = urlParams.get('statuses')?.split(',').filter(s => s) || [];
+      setSelectedStatuses(new Set(statuses));
+    }
+    
+    if (urlParams.has('labels')) {
+      const labels = urlParams.get('labels')?.split(',').filter(l => l) || [];
+      setSelectedLabels(new Set(labels));
+    }
+    
+    if (urlParams.has('assignees')) {
+      const assignees = urlParams.get('assignees')?.split(',').filter(a => a) || [];
+      setSelectedAssignees(new Set(assignees));
+    }
+    
+    if (urlParams.has('needsResponse')) {
+      setSelectedNeedsResponse(urlParams.get('needsResponse') === 'true');
+    }
+    
+    if (urlParams.has('unassigned')) {
+      setSelectedUnassigned(urlParams.get('unassigned') === 'true');
+    }
+    
+    if (urlParams.has('columns')) {
+      const columns = urlParams.get('columns')?.split(',').filter(c => c) || [];
+      setVisibleColumns(new Set(columns));
+    }
+  };
+
+  const copyCurrentFiltersAsUrl = async () => {
+    const url = new URL(window.location.href);
+    url.search = '';
+    
+    const params = new URLSearchParams();
+    
+    if (selectedStatuses.size > 0) {
+      params.set('statuses', Array.from(selectedStatuses).join(','));
+    }
+    
+    if (selectedLabels.size > 0) {
+      params.set('labels', Array.from(selectedLabels).join(','));
+    }
+    
+    if (selectedAssignees.size > 0) {
+      params.set('assignees', Array.from(selectedAssignees).join(','));
+    }
+    
+    if (selectedNeedsResponse) {
+      params.set('needsResponse', 'true');
+    }
+    
+    if (selectedUnassigned) {
+      params.set('unassigned', 'true');
+    }
+    
+    if (visibleColumns.size > 0) {
+      params.set('columns', Array.from(visibleColumns).join(','));
+    }
+    
+    url.search = params.toString();
+    
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      setCopyLinkSuccess(true);
+      setTimeout(() => setCopyLinkSuccess(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err);
+      // Fallback for browsers that don't support clipboard API
+      const textArea = document.createElement('textarea');
+      textArea.value = url.toString();
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopyLinkSuccess(true);
+      setTimeout(() => setCopyLinkSuccess(false), 2000);
+    }
+  };
+
   const abbreviateStatus = (status: string) => {
     const statusLower = status.toLowerCase();
     if (statusLower.includes('backlog')) return 'Backlog';
@@ -490,13 +580,22 @@ const App: React.FC = () => {
               </div>
             )}
           </div>
-          <button 
-            className={`refresh-button-small ${isDataRecent() ? 'disabled' : ''}`}
-            onClick={handleRefresh}
-            disabled={refreshing || isDataRecent()}
-          >
-            {refreshing ? '⟳' : '↻'}
-          </button>
+          <div className="header-buttons">
+            <button 
+              className="copy-link-button"
+              onClick={copyCurrentFiltersAsUrl}
+              title="Copy current filters as URL"
+            >
+              {copyLinkSuccess ? '✓ Copied!' : '🔗 Copy Link'}
+            </button>
+            <button 
+              className={`refresh-button-small ${isDataRecent() ? 'disabled' : ''}`}
+              onClick={handleRefresh}
+              disabled={refreshing || isDataRecent()}
+            >
+              {refreshing ? '⟳' : '↻'}
+            </button>
+          </div>
         </div>
       </div>
 
