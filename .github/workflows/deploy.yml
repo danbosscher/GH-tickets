@@ -115,6 +115,32 @@ jobs:
               AZURE_OPENAI_API_KEY="${{ secrets.AZURE_OPENAI_API_KEY }}" \
               AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
               AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}"
+
+          # Force deactivate all old revisions to ensure new revision gets 100% traffic
+          echo "Deactivating old revisions..."
+          CURRENT_REVISION=$(az containerapp show --name ${{ env.AZURE_CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.latestRevisionName --output tsv)
+          echo "Current active revision: $CURRENT_REVISION"
+          
+          # Get all revisions and deactivate any that aren't the current one
+          az containerapp revision list \
+            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --query "[?properties.active==\`true\` && name!=\`$CURRENT_REVISION\`].name" \
+            --output tsv | while read revision; do
+              if [ ! -z "$revision" ]; then
+                echo "Deactivating old revision: $revision"
+                az containerapp revision deactivate \
+                  --revision "$revision" \
+                  --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
+              fi
+            done
+
+          # Ensure 100% traffic goes to the latest revision
+          echo "Setting 100% traffic to latest revision..."
+          az containerapp ingress traffic set \
+            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --revision-weight "latest=100"
         else
           echo "Creating new Container App..."
           az containerapp create \
