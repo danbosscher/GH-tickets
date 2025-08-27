@@ -30,6 +30,13 @@ db.exec(`
     timestamp INTEGER,
     last_updated TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS aks_issues_cache (
+    id INTEGER PRIMARY KEY,
+    data TEXT,
+    timestamp INTEGER,
+    last_updated TEXT
+  );
 `);
 
 interface CacheEntry {
@@ -40,6 +47,12 @@ interface CacheEntry {
 
 interface GitHubCache {
   data: RoadmapItem[];
+  timestamp: number;
+  lastUpdated: string;
+}
+
+interface AKSIssuesCache {
+  data: AKSIssue[];
   timestamp: number;
   lastUpdated: string;
 }
@@ -91,6 +104,32 @@ function saveGitHubCache(data: RoadmapItem[]): void {
   `);
   stmt.run(JSON.stringify(data), timestamp, lastUpdated);
   console.log('Saved GitHub data to SQLite cache');
+}
+
+function loadAKSIssuesCache(): AKSIssuesCache | null {
+  const stmt = db.prepare('SELECT data, timestamp, last_updated FROM aks_issues_cache WHERE id = 1');
+  const row = stmt.get() as { data: string; timestamp: number; last_updated: string } | undefined;
+  
+  if (row && (Date.now() - row.timestamp < GITHUB_CACHE_DURATION)) {
+    return {
+      data: JSON.parse(row.data),
+      timestamp: row.timestamp,
+      lastUpdated: row.last_updated
+    };
+  }
+  return null;
+}
+
+function saveAKSIssuesCache(data: AKSIssue[]): void {
+  const timestamp = Date.now();
+  const lastUpdated = new Date().toISOString();
+  
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO aks_issues_cache (id, data, timestamp, last_updated) 
+    VALUES (1, ?, ?, ?)
+  `);
+  stmt.run(JSON.stringify(data), timestamp, lastUpdated);
+  console.log('Saved AKS issues data to SQLite cache');
 }
 
 // Get cache key for an issue
@@ -147,6 +186,31 @@ interface AKSIssue {
   }>;
   state: string;
   comments: number;
+  commentsData?: {
+    totalCount: number;
+    pageInfo?: {
+      hasNextPage: boolean;
+      endCursor: string;
+    };
+    nodes: Array<{
+      id: string;
+      createdAt: string;
+      body: string;
+      author: {
+        login: string;
+        name: string | null;
+      };
+      url: string;
+    }>;
+  };
+  lastComment?: {
+    createdAt: string;
+    author: {
+      login: string;
+      name: string | null;
+    };
+  } | null;
+  needsResponse?: boolean;
   aiSummary?: {
     currentStatus: string;
     nextSteps: string;
@@ -1009,7 +1073,7 @@ async function fetchAKSOpenIssues(): Promise<AKSIssue[]> {
     const query = `
       query($cursor: String) {
         repository(owner: "Azure", name: "AKS") {
-          issues(first: 50, after: $cursor, states: OPEN, orderBy: {field: CREATED_AT, direction: DESC}) {
+          issues(first: 50, after: $cursor, states: OPEN) {
             pageInfo {
               hasNextPage
               endCursor
@@ -1035,8 +1099,24 @@ async function fetchAKSOpenIssues(): Promise<AKSIssue[]> {
                   avatarUrl
                 }
               }
-              comments {
+              comments(first: 10) {
                 totalCount
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  id
+                  createdAt
+                  body
+                  author {
+                    login
+                    ... on User {
+                      name
+                    }
+                  }
+                  url
+                }
               }
             }
           }
@@ -1070,6 +1150,7 @@ async function fetchAKSOpenIssues(): Promise<AKSIssue[]> {
           avatarUrl: assignee.avatarUrl
         })),
         comments: issue.comments.totalCount,
+        commentsData: issue.comments, // Preserve the full comments structure for processing
         aiSummary: null // Will be populated by AI analysis
       }));
       
@@ -1132,35 +1213,87 @@ async function getRoadmapIssueIds(): Promise<Set<string>> {
 
 app.get('/api/aks-issues', async (req, res) => {
   try {
-    console.log('Fetching AKS open issues...');
+    const forceRefresh = req.query.refresh === 'true';
+    
+    // Check AKS issues cache first (unless force refresh)
+    if (!forceRefresh) {
+      const cachedData = loadAKSIssuesCache();
+      if (cachedData) {
+        console.log('Serving AKS issues data from cache');
+        return res.json(cachedData.data);
+      }
+    }
+    
+    console.log(forceRefresh ? 'Force refresh requested for AKS issues, fetching fresh data...' : 'AKS issues cache miss, fetching fresh data...');
+    
+    sendProgress('Fetching roadmap issue IDs to filter', 0, 100);
     
     // Get roadmap issue IDs to filter out
     const roadmapIssueIds = await getRoadmapIssueIds();
     
+    sendProgress('Fetching AKS open issues', 10, 100);
+    
     // Fetch all AKS open issues
     const allIssues = await fetchAKSOpenIssues();
+    
+    sendProgress('Filtering out roadmap issues', 30, 100);
     
     // Filter out roadmap issues
     const filteredIssues = allIssues.filter(issue => !roadmapIssueIds.has(issue.id));
     
     console.log(`Filtered out ${allIssues.length - filteredIssues.length} roadmap issues, processing ${filteredIssues.length} remaining issues`);
     
+    sendProgress('Starting AI analysis', 35, 100);
+    
     // Process AI analysis in batches
     const CONCURRENCY_LIMIT = 5; // Process 5 issues in parallel
     const processedIssues: AKSIssue[] = [];
+    const totalIssues = filteredIssues.length;
     
     for (let i = 0; i < filteredIssues.length; i += CONCURRENCY_LIMIT) {
       const batch = filteredIssues.slice(i, i + CONCURRENCY_LIMIT);
       const batchPromises = batch.map(async (issue, batchIndex) => {
         const globalIndex = i + batchIndex;
+        
+        // Update progress for each issue processed
+        const progressPercent = Math.round(35 + ((globalIndex / totalIssues) * 60)); // 35% to 95%
+        sendProgress(`Analyzing issue ${globalIndex + 1}/${totalIssues}: ${issue.title.substring(0, 40)}...`, progressPercent, 100);
+        
         console.log(`Processing AI analysis for issue ${globalIndex + 1}/${filteredIssues.length}: ${issue.title.substring(0, 50)}...`);
         
-        // For now, we'll skip fetching comments to speed up the process
-        // In production, you might want to fetch comments for better analysis
-        const aiSummary = await analyzeIssueWithAI(issue.title, issue.body, []);
+        // Fetch all comments if there are more than 10
+        let allComments = issue.commentsData?.nodes || [];
+        if (issue.commentsData?.pageInfo?.hasNextPage && issue.commentsData.nodes && issue.commentsData.pageInfo.endCursor) {
+          console.log(`Issue ${issue.title} has more than 10 comments, fetching all...`);
+          allComments = await fetchAllComments(issue.id, issue.commentsData.nodes, issue.commentsData.pageInfo.hasNextPage, issue.commentsData.pageInfo.endCursor);
+        }
         
+        // Get last comment info (sort all comments by date)
+        const sortedComments = allComments
+          .filter((comment: any) => comment.author)
+          .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        
+        const lastComment = sortedComments.length > 0 ? {
+          createdAt: sortedComments[0].createdAt,
+          author: {
+            login: sortedComments[0].author.login,
+            name: sortedComments[0].author.name || null
+          }
+        } : null;
+        
+        // Determine if needs response from team (if last comment is not from an assignee)
+        const allAssigneeLogins = issue.assignees.map((assignee: any) => assignee.login);
+        const needsResponse = lastComment ? !allAssigneeLogins.includes(lastComment.author.login) : false;
+        
+        // Use recent comments for AI analysis (limit to 10 most recent for performance)
+        const recentComments = sortedComments.slice(0, 10);
+        const aiSummary = await analyzeIssueWithAI(issue.title, issue.body, recentComments);
+        
+        const { commentsData, ...cleanIssue } = issue;
         return {
-          ...issue,
+          ...cleanIssue,
+          lastComment,
+          needsResponse,
           aiSummary
         };
       });
@@ -1168,7 +1301,9 @@ app.get('/api/aks-issues', async (req, res) => {
       const batchResults = await Promise.all(batchPromises);
       processedIssues.push(...batchResults);
       
-      console.log(`Completed batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(filteredIssues.length / CONCURRENCY_LIMIT)}`);
+      const batchNumber = Math.floor(i / CONCURRENCY_LIMIT) + 1;
+      const totalBatches = Math.ceil(filteredIssues.length / CONCURRENCY_LIMIT);
+      console.log(`Completed batch ${batchNumber}/${totalBatches}`);
       
       // Add delay between batches to avoid overwhelming the AI service
       if (i + CONCURRENCY_LIMIT < filteredIssues.length) {
@@ -1176,7 +1311,15 @@ app.get('/api/aks-issues', async (req, res) => {
       }
     }
     
+    sendProgress('Saving to cache', 95, 100);
+    
+    // Save the processed data to AKS issues cache
+    saveAKSIssuesCache(processedIssues);
+    
     console.log(`Completed processing ${processedIssues.length} AKS issues`);
+    
+    sendProgress('Complete', 100, 100);
+    
     res.json(processedIssues);
   } catch (error) {
     console.error('Error fetching AKS issues:', error);

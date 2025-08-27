@@ -18,6 +18,14 @@ interface AKSIssue {
   }>;
   state: string;
   comments: number;
+  lastComment?: {
+    createdAt: string;
+    author: {
+      login: string;
+      name: string | null;
+    };
+  } | null;
+  needsResponse?: boolean;
   aiSummary?: {
     currentStatus: string;
     nextSteps: string;
@@ -39,30 +47,68 @@ const AKSIssuesPage: React.FC = () => {
   const [labelsDropdownOpen, setLabelsDropdownOpen] = useState(false);
   const [assigneesDropdownOpen, setAssigneesDropdownOpen] = useState(false);
   const [unassignedDropdownOpen, setUnassignedDropdownOpen] = useState(false);
-  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(new Set(['title', 'labels', 'assignees', 'created', 'updated', 'comments', 'aiThinks']));
+  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(new Set(['title', 'labels', 'assignees', 'created', 'updated', 'lastComment', 'needsResponse', 'ai']));
   const [columnsDropdownOpen, setColumnsDropdownOpen] = useState(false);
   const [sortField, setSortField] = useState<string>('');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [hoveredIssue, setHoveredIssue] = useState<string | null>(null);
   const [popoverPosition, setPopoverPosition] = useState<{x: number, y: number}>({x: 0, y: 0});
+  const [progress, setProgress] = useState<{step: string, current: number, total: number} | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     fetchAKSIssues();
   }, []);
 
-  const fetchAKSIssues = async () => {
+  const fetchAKSIssues = async (forceRefresh = false) => {
+    let cleanup: (() => void) | null = null;
+    
     try {
       setLoading(true);
-      const response = await fetch('/api/aks-issues');
+      if (forceRefresh) {
+        setRefreshing(true);
+      }
+      
+      // Set up Server-Sent Events for progress updates for both initial load and refresh
+      const eventSource = new EventSource('/api/progress');
+      eventSource.onmessage = (event) => {
+        try {
+          const progressData = JSON.parse(event.data);
+          setProgress(progressData);
+        } catch (e) {
+          console.error('Failed to parse progress data:', e);
+        }
+      };
+      
+      eventSource.onerror = () => {
+        eventSource.close();
+      };
+      
+      // Clean up event source when request completes
+      cleanup = () => {
+        eventSource.close();
+        setProgress(null);
+      };
+      
+      setTimeout(() => cleanup?.(), 30000); // Cleanup after 30 seconds max
+      
+      const url = forceRefresh ? '/api/aks-issues?refresh=true' : '/api/aks-issues';
+      const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       const data = await response.json();
       setIssues(data);
+      
+      // Clean up when done
+      cleanup?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch AKS issues');
+      // Clean up on error too
+      cleanup?.();
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -93,6 +139,10 @@ const AKSIssuesPage: React.FC = () => {
       case 'updatedAt':
         aValue = new Date(a.updatedAt);
         bValue = new Date(b.updatedAt);
+        break;
+      case 'lastComment':
+        aValue = a.lastComment ? new Date(a.lastComment.createdAt) : new Date(0);
+        bValue = b.lastComment ? new Date(b.lastComment.createdAt) : new Date(0);
         break;
       case 'comments':
         aValue = a.comments;
@@ -223,7 +273,24 @@ const AKSIssuesPage: React.FC = () => {
     return (
       <div className="container">
         <div className="loading">
-          Loading Azure AKS issues...
+          {progress ? (
+            <div className="progress-container">
+              <div className="progress-text">
+                {progress.step}
+              </div>
+              <div className="progress-bar">
+                <div 
+                  className="progress-fill" 
+                  style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                ></div>
+              </div>
+              <div className="progress-numbers">
+                {progress.current} / {progress.total}
+              </div>
+            </div>
+          ) : (
+            'Loading Azure AKS issues...'
+          )}
         </div>
       </div>
     );
@@ -252,9 +319,10 @@ const AKSIssuesPage: React.FC = () => {
           <div className="header-buttons">
             <button 
               className="refresh-button-small"
-              onClick={fetchAKSIssues}
+              onClick={() => fetchAKSIssues(true)}
+              disabled={refreshing}
             >
-              ↻
+              {refreshing ? '⟳' : '↻'}
             </button>
           </div>
         </div>
@@ -411,18 +479,26 @@ const AKSIssuesPage: React.FC = () => {
                     <label className="checkbox-label">
                       <input
                         type="checkbox"
-                        checked={visibleColumns.has('comments')}
-                        onChange={() => handleColumnToggle('comments')}
+                        checked={visibleColumns.has('lastComment')}
+                        onChange={() => handleColumnToggle('lastComment')}
                       />
-                      <span>Comments</span>
+                      <span>Last comment</span>
                     </label>
                     <label className="checkbox-label">
                       <input
                         type="checkbox"
-                        checked={visibleColumns.has('aiThinks')}
-                        onChange={() => handleColumnToggle('aiThinks')}
+                        checked={visibleColumns.has('needsResponse')}
+                        onChange={() => handleColumnToggle('needsResponse')}
                       />
-                      <span>AI Thinks</span>
+                      <span>Needs response</span>
+                    </label>
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns.has('ai')}
+                        onChange={() => handleColumnToggle('ai')}
+                      />
+                      <span>AI</span>
                     </label>
                   </div>
                 </div>
@@ -457,13 +533,16 @@ const AKSIssuesPage: React.FC = () => {
                   Issue updated{getSortIcon('updatedAt')}
                 </th>
               )}
-              {visibleColumns.has('comments') && (
-                <th className="sortable" onClick={() => handleSort('comments')}>
-                  Comments{getSortIcon('comments')}
+              {visibleColumns.has('lastComment') && (
+                <th className="sortable" onClick={() => handleSort('lastComment')}>
+                  Last comment{getSortIcon('lastComment')}
                 </th>
               )}
-              {visibleColumns.has('aiThinks') && (
-                <th>AI Thinks</th>
+              {visibleColumns.has('needsResponse') && (
+                <th>Needs response</th>
+              )}
+              {visibleColumns.has('ai') && (
+                <th>AI</th>
               )}
             </tr>
           </thead>
@@ -531,12 +610,31 @@ const AKSIssuesPage: React.FC = () => {
                     </div>
                   </td>
                 )}
-                {visibleColumns.has('comments') && (
+                {visibleColumns.has('lastComment') && (
                   <td>
-                    <span className="comment-count">{issue.comments}</span>
+                    <div className="date-info">
+                      {issue.lastComment ? (
+                        <>
+                          {formatDate(issue.lastComment.createdAt)}
+                          <br />
+                          <small>by {issue.lastComment.author.name || issue.lastComment.author.login}</small>
+                        </>
+                      ) : (
+                        <span style={{ color: '#666', fontSize: '12px' }}>No comments</span>
+                      )}
+                    </div>
                   </td>
                 )}
-                {visibleColumns.has('aiThinks') && (
+                {visibleColumns.has('needsResponse') && (
+                  <td>
+                    {issue.needsResponse && (
+                      <span className="needs-response-flag" title="Needs response from team">
+                        🚩
+                      </span>
+                    )}
+                  </td>
+                )}
+                {visibleColumns.has('ai') && (
                   <td>
                     <div 
                       className="ai-thinks-cell"
@@ -545,9 +643,15 @@ const AKSIssuesPage: React.FC = () => {
                     >
                       {issue.aiSummary ? (
                         <>
-                          <span className="ai-thinks-label">
-                            {getAIThinksLabel(issue.aiSummary)}
-                          </span>
+                          {getAIThinksLabel(issue.aiSummary) ? (
+                            <span className="ai-thinks-label">
+                              {getAIThinksLabel(issue.aiSummary)}
+                            </span>
+                          ) : (
+                            <span className="ai-thinks-label" style={{ backgroundColor: '#6c757d' }}>
+                              ANALYZED
+                            </span>
+                          )}
                           {hoveredIssue === issue.id && (
                             <div 
                               className="ai-summary-popover"
