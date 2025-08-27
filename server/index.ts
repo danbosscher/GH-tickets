@@ -1088,7 +1088,8 @@ async function fetchAKSOpenIssues(): Promise<AKSIssue[]> {
 
   while (hasNextPage && pageCount < MAX_PAGES) {
     pageCount++;
-    sendProgress(`Fetching AKS issues (page ${pageCount}/${MAX_PAGES})`, pageCount, MAX_PAGES, 'aks');
+    const progressPercent = Math.round(5 + (pageCount / MAX_PAGES) * 15); // 5% to 20%
+    sendProgress(`Fetching AKS issues (page ${pageCount}/${MAX_PAGES})`, progressPercent, 100, 'aks');
     console.log(`Fetching AKS issues page ${pageCount}...`);
     
     const query = `
@@ -1277,21 +1278,22 @@ app.get('/api/aks-issues', async (req, res) => {
     sendProgress('Starting AKS issues fetch', 0, 100, 'aks');
     
     // Get roadmap issue IDs to filter out
-    sendProgress('Fetching roadmap issue IDs to filter', 5, 100, 'aks');
+    sendProgress('Fetching roadmap issue IDs to filter', 2, 100, 'aks');
     const roadmapIssueIds = await getRoadmapIssueIds();
     
-    // Fetch all AKS open issues (this will send its own progress updates)
-    sendProgress('Starting to fetch AKS open issues', 10, 100, 'aks');
+    // Fetch all AKS open issues (this will send its own progress updates from 5% to 20%)
+    sendProgress('Starting to fetch AKS open issues', 5, 100, 'aks');
     const allIssues = await fetchAKSOpenIssues();
     
-    sendProgress(`Filtering out ${roadmapIssueIds.size} roadmap issues from ${allIssues.length} total issues`, 25, 100, 'aks');
+    sendProgress(`Filtering out ${roadmapIssueIds.size} roadmap issues from ${allIssues.length} total issues`, 22, 100, 'aks');
     
     // Filter out roadmap issues
     const filteredIssues = allIssues.filter(issue => !roadmapIssueIds.has(issue.id));
     
     console.log(`Filtered out ${allIssues.length - filteredIssues.length} roadmap issues, processing ${filteredIssues.length} remaining issues`);
+    console.log(`Total open issues in repo: ${allIssues.length}, Issues after filtering roadmap items: ${filteredIssues.length}`);
     
-    sendProgress(`Starting AI analysis of ${filteredIssues.length} issues`, 30, 100, 'aks');
+    sendProgress(`Starting AI analysis of ${filteredIssues.length} issues (${allIssues.length} total issues fetched)`, 25, 100, 'aks');
     
     // Process AI analysis in batches
     const CONCURRENCY_LIMIT = 5; // Process 5 issues in parallel
@@ -1302,8 +1304,8 @@ app.get('/api/aks-issues', async (req, res) => {
       const batch = filteredIssues.slice(i, i + CONCURRENCY_LIMIT);
       
       // Update progress for the batch
-      const progressPercent = Math.round(30 + ((i / totalIssues) * 65)); // 30% to 95%
-      sendProgress(`Analyzing batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(totalIssues / CONCURRENCY_LIMIT)} (${i + 1}-${Math.min(i + CONCURRENCY_LIMIT, totalIssues)} of ${totalIssues} issues)`, progressPercent, 100, 'aks');
+      const progressPercent = Math.round(25 + ((i / totalIssues) * 70)); // 25% to 95%
+      sendProgress(`Analyzing batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(totalIssues / CONCURRENCY_LIMIT)} (${i + 1}-${Math.min(i + CONCURRENCY_LIMIT, totalIssues)} of ${totalIssues} filtered issues)`, progressPercent, 100, 'aks');
       
       const batchPromises = batch.map(async (issue, batchIndex) => {
         const globalIndex = i + batchIndex;
