@@ -129,6 +129,35 @@ const openai = new OpenAI({
   },
 });
 
+interface AKSIssue {
+  id: string;
+  title: string;
+  url: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  labels: Array<{
+    name: string;
+    color: string;
+  }>;
+  assignees: Array<{
+    login: string;
+    name: string | null;
+    avatarUrl: string;
+  }>;
+  state: string;
+  comments: number;
+  aiSummary?: {
+    currentStatus: string;
+    nextSteps: string;
+    analysis: {
+      isKnownIssue: boolean;
+      isExpectedBehaviour: boolean;
+      shouldClose: boolean;
+    };
+  } | null;
+}
+
 interface RoadmapItem {
   id: string;
   title: string;
@@ -836,6 +865,324 @@ async function processRetryQueue() {
     }
   }
 }
+
+// Function to analyze issue with AI for summary and classification
+async function analyzeIssueWithAI(title: string, body: string, comments: any[]): Promise<{
+  currentStatus: string;
+  nextSteps: string;
+  analysis: {
+    isKnownIssue: boolean;
+    isExpectedBehaviour: boolean;
+    shouldClose: boolean;
+  };
+} | null> {
+  if (!body || body.trim().length === 0) return null;
+  
+  const cacheKey = `analysis_${title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)}_${body.length}_${comments.length}`;
+  const cached = loadAICache(cacheKey);
+  
+  if (cached && isCacheValid(cached)) {
+    if (cached.failed) {
+      const oneMinute = 60 * 1000;
+      if (Date.now() - cached.timestamp < oneMinute) {
+        console.log(`Recent analysis failure for: ${title.substring(0, 50)}... (will retry later)`);
+        return null;
+      }
+      console.log(`Retrying failed analysis for: ${title.substring(0, 50)}...`);
+    } else {
+      console.log(`Analysis cache hit for: ${title.substring(0, 50)}...`);
+      if (cached.result) {
+        try {
+          return JSON.parse(cached.result);
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+  }
+  
+  try {
+    // Prepare comments text (limit to recent comments to avoid token limit)
+    const recentComments = comments
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 10)
+      .map((comment, index) => `Comment ${index + 1} by ${comment.author?.login || 'Unknown'} (${comment.createdAt}):\n${comment.body}`)
+      .join('\n\n---\n\n');
+
+    const prompt = `You are analyzing Azure AKS GitHub issues to provide helpful insights. Please analyze this issue and provide:
+
+1. Current Status: A brief 1-paragraph summary of what's happening with this issue
+2. Next Steps: A brief 1-paragraph summary of what should happen next
+3. Analysis: Three true/false determinations:
+   - Is this a known issue? (true if it's a commonly reported problem or duplicate)
+   - Is this expected behaviour? (true if this is working as designed, not a bug)
+   - Should we close this issue? (true if it appears resolved, duplicate, or not actionable)
+
+Issue Title: ${title}
+
+Issue Body:
+${body}
+
+Recent Comments:
+${recentComments}
+
+Please respond with ONLY a JSON object in this exact format:
+{
+  "currentStatus": "Brief paragraph about current status",
+  "nextSteps": "Brief paragraph about next steps",
+  "analysis": {
+    "isKnownIssue": false,
+    "isExpectedBehaviour": false,
+    "shouldClose": false
+  }
+}`;
+
+    console.log(`AI analysis for: ${title.substring(0, 50)}...`);
+    const response = await openai.chat.completions.create({
+      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful assistant that analyzes GitHub issues. Always respond with valid JSON only.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      max_tokens: 500,
+      temperature: 0.1
+    });
+
+    const result = response.choices[0]?.message?.content?.trim();
+    
+    if (!result) {
+      saveAICache(cacheKey, null, false);
+      return null;
+    }
+    
+    try {
+      // Remove markdown code blocks if present
+      let cleanResult = result.trim();
+      if (cleanResult.startsWith('```json')) {
+        cleanResult = cleanResult.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (cleanResult.startsWith('```')) {
+        cleanResult = cleanResult.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
+      
+      const parsed = JSON.parse(cleanResult);
+      
+      if (!parsed.currentStatus || !parsed.nextSteps || !parsed.analysis) {
+        saveAICache(cacheKey, null, false);
+        return null;
+      }
+      
+      // Save successful result to cache
+      saveAICache(cacheKey, JSON.stringify(parsed), false);
+      
+      return parsed;
+    } catch (parseError) {
+      console.error('Failed to parse analysis result:', parseError, 'Result:', result);
+      saveAICache(cacheKey, null, true);
+      return null;
+    }
+  } catch (error) {
+    console.error('Issue analysis failed:', error);
+    saveAICache(cacheKey, null, true);
+    return null;
+  }
+}
+
+// Function to fetch all open issues from Azure/AKS repository
+async function fetchAKSOpenIssues(): Promise<AKSIssue[]> {
+  const issues: AKSIssue[] = [];
+  let hasNextPage = true;
+  let cursor: string | null = null;
+  let pageCount = 0;
+  const MAX_PAGES = 20; // Limit to first ~1000 issues
+
+  while (hasNextPage && pageCount < MAX_PAGES) {
+    pageCount++;
+    console.log(`Fetching AKS issues page ${pageCount}...`);
+    
+    const query = `
+      query($cursor: String) {
+        repository(owner: "Azure", name: "AKS") {
+          issues(first: 50, after: $cursor, states: OPEN, orderBy: {field: CREATED_AT, direction: DESC}) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              title
+              url
+              body
+              createdAt
+              updatedAt
+              state
+              labels(first: 20) {
+                nodes {
+                  name
+                  color
+                }
+              }
+              assignees(first: 10) {
+                nodes {
+                  login
+                  name
+                  avatarUrl
+                }
+              }
+              comments {
+                totalCount
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const response: any = await graphqlWithAuth(query, { cursor });
+      
+      if (!response?.repository?.issues) {
+        throw new Error('Failed to fetch issues from Azure/AKS repository');
+      }
+      
+      const issuesData = response.repository.issues;
+      const fetchedIssues = issuesData.nodes.map((issue: any) => ({
+        id: issue.id,
+        title: issue.title,
+        url: issue.url,
+        body: issue.body || '',
+        createdAt: issue.createdAt,
+        updatedAt: issue.updatedAt,
+        state: issue.state,
+        labels: issue.labels.nodes.map((label: any) => ({
+          name: label.name,
+          color: label.color
+        })),
+        assignees: issue.assignees.nodes.map((assignee: any) => ({
+          login: assignee.login,
+          name: assignee.name,
+          avatarUrl: assignee.avatarUrl
+        })),
+        comments: issue.comments.totalCount,
+        aiSummary: null // Will be populated by AI analysis
+      }));
+      
+      issues.push(...fetchedIssues);
+      hasNextPage = issuesData.pageInfo.hasNextPage;
+      cursor = issuesData.pageInfo.endCursor;
+      
+      console.log(`Fetched ${fetchedIssues.length} issues (total: ${issues.length})`);
+      
+      // Add delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 200));
+    } catch (error) {
+      console.error('Error fetching AKS issues:', error);
+      break;
+    }
+  }
+  
+  return issues;
+}
+
+// Function to get roadmap issue IDs to filter them out
+async function getRoadmapIssueIds(): Promise<Set<string>> {
+  try {
+    const query = `
+      query {
+        organization(login: "Azure") {
+          projectV2(number: 685) {
+            items(first: 100) {
+              nodes {
+                content {
+                  ... on Issue {
+                    id
+                    url
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+    
+    const response: any = await graphqlWithAuth(query);
+    const roadmapItems = response?.organization?.projectV2?.items?.nodes || [];
+    
+    const issueIds = new Set<string>();
+    roadmapItems.forEach((item: any) => {
+      if (item.content?.id) {
+        issueIds.add(item.content.id);
+      }
+    });
+    
+    console.log(`Found ${issueIds.size} roadmap issue IDs to filter out`);
+    return issueIds;
+  } catch (error) {
+    console.error('Error fetching roadmap issue IDs:', error);
+    return new Set();
+  }
+}
+
+app.get('/api/aks-issues', async (req, res) => {
+  try {
+    console.log('Fetching AKS open issues...');
+    
+    // Get roadmap issue IDs to filter out
+    const roadmapIssueIds = await getRoadmapIssueIds();
+    
+    // Fetch all AKS open issues
+    const allIssues = await fetchAKSOpenIssues();
+    
+    // Filter out roadmap issues
+    const filteredIssues = allIssues.filter(issue => !roadmapIssueIds.has(issue.id));
+    
+    console.log(`Filtered out ${allIssues.length - filteredIssues.length} roadmap issues, processing ${filteredIssues.length} remaining issues`);
+    
+    // Process AI analysis in batches
+    const CONCURRENCY_LIMIT = 5; // Process 5 issues in parallel
+    const processedIssues: AKSIssue[] = [];
+    
+    for (let i = 0; i < filteredIssues.length; i += CONCURRENCY_LIMIT) {
+      const batch = filteredIssues.slice(i, i + CONCURRENCY_LIMIT);
+      const batchPromises = batch.map(async (issue, batchIndex) => {
+        const globalIndex = i + batchIndex;
+        console.log(`Processing AI analysis for issue ${globalIndex + 1}/${filteredIssues.length}: ${issue.title.substring(0, 50)}...`);
+        
+        // For now, we'll skip fetching comments to speed up the process
+        // In production, you might want to fetch comments for better analysis
+        const aiSummary = await analyzeIssueWithAI(issue.title, issue.body, []);
+        
+        return {
+          ...issue,
+          aiSummary
+        };
+      });
+      
+      const batchResults = await Promise.all(batchPromises);
+      processedIssues.push(...batchResults);
+      
+      console.log(`Completed batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(filteredIssues.length / CONCURRENCY_LIMIT)}`);
+      
+      // Add delay between batches to avoid overwhelming the AI service
+      if (i + CONCURRENCY_LIMIT < filteredIssues.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    console.log(`Completed processing ${processedIssues.length} AKS issues`);
+    res.json(processedIssues);
+  } catch (error) {
+    console.error('Error fetching AKS issues:', error);
+    res.status(500).json({ error: 'Failed to fetch AKS issues' });
+  }
+});
 
 // Start background retry process - runs every minute
 setInterval(processRetryQueue, 60 * 1000);

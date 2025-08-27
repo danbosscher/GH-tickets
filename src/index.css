@@ -11,6 +11,41 @@ body {
   box-sizing: border-box;
 }
 
+.app-navigation {
+  background: white;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 0;
+}
+
+.nav-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  gap: 0;
+}
+
+.nav-link {
+  display: block;
+  padding: 16px 24px;
+  text-decoration: none;
+  color: #666;
+  font-weight: 500;
+  border-bottom: 3px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.nav-link:hover {
+  color: #333;
+  background-color: #f8f9fa;
+}
+
+.nav-link.active {
+  color: #007bff;
+  border-bottom-color: #007bff;
+  background-color: #f8f9fa;
+}
+
 .container {
   max-width: 1400px;
   margin: 0 auto;
@@ -538,4 +573,75 @@ body {
 
 .needs-response-flag:hover {
   transform: scale(1.2);
+}
+
+.ai-thinks-cell {
+  position: relative;
+  cursor: pointer;
+}
+
+.ai-thinks-label {
+  background: #007bff;
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  display: inline-block;
+}
+
+.ai-thinks-label:empty {
+  display: none;
+}
+
+.ai-processing {
+  color: #999;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.ai-summary-popover {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  max-width: 400px;
+  padding: 16px;
+  z-index: 1001;
+}
+
+.ai-summary-content h4 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: #333;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 4px;
+}
+
+.ai-summary-content h4:not(:first-child) {
+  margin-top: 16px;
+}
+
+.ai-summary-content p {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #555;
+}
+
+.ai-summary-content ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 13px;
+}
+
+.ai-summary-content li {
+  margin-bottom: 4px;
+  color: #555;
+}
+
+.comment-count {
+  font-weight: 600;
+  color: #666;
 }
