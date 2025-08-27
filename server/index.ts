@@ -1325,7 +1325,7 @@ app.get('/api/aks-issues', async (req, res) => {
       
       // Update progress for the batch
       const progressPercent = Math.round(25 + ((i / totalIssues) * 70)); // 25% to 95%
-      sendProgress(`Analyzing batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(totalIssues / CONCURRENCY_LIMIT)} (${i + 1}-${Math.min(i + CONCURRENCY_LIMIT, totalIssues)} of ${totalIssues} filtered issues)`, progressPercent, 100, 'aks');
+      sendProgress(`Analyzing batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(totalIssues / CONCURRENCY_LIMIT)} (${i + 1}-${Math.min(i + CONCURRENCY_LIMIT, totalIssues)} of ${totalIssues} issues, ${allIssues.length} total)`, progressPercent, 100, 'aks');
       
       const batchPromises = batch.map(async (issue, batchIndex) => {
         const globalIndex = i + batchIndex;
