@@ -2,16 +2,14 @@ name: Deploy to Azure Container Apps
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ '**' ]  # Deploy any branch
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  AZURE_CONTAINER_APP_NAME: aks-roadmap-viewer
   AZURE_RESOURCE_GROUP: aks-gh-tool
   AZURE_LOCATION: northeurope
-  AZURE_CONTAINER_APP_ENV: aks-roadmap-env
 
 jobs:
   build-and-deploy:
@@ -23,6 +21,37 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+
+    - name: Set branch-specific variables
+      id: branch-vars
+      run: |
+        # Sanitize branch name for Azure resource naming (alphanumeric and hyphens only, max 60 chars)
+        BRANCH_NAME="${{ github.ref_name }}"
+        SANITIZED_BRANCH=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | sed 's/--*/-/g' | tr '[:upper:]' '[:lower:]' | sed 's/^-\|-$//g')
+        
+        # Truncate if too long (Azure Container Apps names must be <= 32 chars)
+        if [ ${#SANITIZED_BRANCH} -gt 20 ]; then
+          SANITIZED_BRANCH=$(echo "$SANITIZED_BRANCH" | cut -c1-20)
+        fi
+        
+        # Set container app name based on branch
+        if [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "master" ]]; then
+          CONTAINER_APP_NAME="aks-roadmap-viewer"
+          CONTAINER_APP_ENV="aks-roadmap-env"
+        else
+          CONTAINER_APP_NAME="aks-roadmap-$SANITIZED_BRANCH"
+          CONTAINER_APP_ENV="aks-roadmap-env-$SANITIZED_BRANCH"
+        fi
+        
+        echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_OUTPUT
+        echo "SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $GITHUB_OUTPUT
+        echo "CONTAINER_APP_NAME=$CONTAINER_APP_NAME" >> $GITHUB_OUTPUT
+        echo "CONTAINER_APP_ENV=$CONTAINER_APP_ENV" >> $GITHUB_OUTPUT
+        
+        echo "Branch: $BRANCH_NAME"
+        echo "Sanitized: $SANITIZED_BRANCH"
+        echo "Container App: $CONTAINER_APP_NAME"
+        echo "Environment: $CONTAINER_APP_ENV"
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -67,20 +96,20 @@ jobs:
     - name: Create Container Apps Environment
       run: |
         # Check if environment exists
-        if ! az containerapp env show --name ${{ env.AZURE_CONTAINER_APP_ENV }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+        if ! az containerapp env show --name ${{ steps.branch-vars.outputs.CONTAINER_APP_ENV }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
           echo "Creating Container Apps environment with logging..."
           az containerapp env create \
-            --name ${{ env.AZURE_CONTAINER_APP_ENV }} \
+            --name ${{ steps.branch-vars.outputs.CONTAINER_APP_ENV }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --location ${{ env.AZURE_LOCATION }} \
             --logs-workspace-id $(az monitor log-analytics workspace create \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --workspace-name ${{ env.AZURE_CONTAINER_APP_ENV }}-logs \
+              --workspace-name ${{ steps.branch-vars.outputs.CONTAINER_APP_ENV }}-logs \
               --location ${{ env.AZURE_LOCATION }} \
               --query customerId --output tsv) \
             --logs-workspace-key $(az monitor log-analytics workspace get-shared-keys \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --workspace-name ${{ env.AZURE_CONTAINER_APP_ENV }}-logs \
+              --workspace-name ${{ steps.branch-vars.outputs.CONTAINER_APP_ENV }}-logs \
               --query primarySharedKey --output tsv)
         else
           echo "Container Apps environment already exists"
@@ -92,12 +121,12 @@ jobs:
         IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
 
         # Check if container app exists
-        if az containerapp show --name ${{ env.AZURE_CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+        if az containerapp show --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
           echo "Updating existing Container App with new revision..."
 
           # Update registry credentials first
           az containerapp registry set \
-            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --server ${{ env.REGISTRY }} \
             --username ${{ github.actor }} \
@@ -105,9 +134,13 @@ jobs:
 
           # Update the container app with new image and force restart
           az containerapp update \
-            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --image $IMAGE_TAG \
+            --min-replicas 1 \
+            --max-replicas 1 \
+            --cpu 2.0 \
+            --memory 4.0Gi \
             --set-env-vars \
               NODE_ENV=production \
               PORT=3000 \
@@ -118,22 +151,22 @@ jobs:
 
           # Force restart to ensure new revision is active (single revision mode handles traffic automatically)
           echo "Forcing container restart to ensure new revision is active..."
-          CURRENT_REVISION=$(az containerapp show --name ${{ env.AZURE_CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.latestRevisionName --output tsv)
+          CURRENT_REVISION=$(az containerapp show --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.latestRevisionName --output tsv)
           echo "Current active revision: $CURRENT_REVISION"
           
           # In single revision mode, the latest revision automatically gets 100% traffic
           # We just need to ensure the app is properly restarted with the new image
           echo "Restarting container app to activate new revision..."
           az containerapp revision restart \
-            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --revision "$CURRENT_REVISION"
         else
           echo "Creating new Container App..."
           az containerapp create \
-            --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+            --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --environment ${{ env.AZURE_CONTAINER_APP_ENV }} \
+            --environment ${{ steps.branch-vars.outputs.CONTAINER_APP_ENV }} \
             --image $IMAGE_TAG \
             --registry-server ${{ env.REGISTRY }} \
             --registry-username ${{ github.actor }} \
@@ -141,9 +174,9 @@ jobs:
             --target-port 3000 \
             --ingress external \
             --min-replicas 1 \
-            --max-replicas 3 \
-            --cpu 1.0 \
-            --memory 2.0Gi \
+            --max-replicas 1 \
+            --cpu 2.0 \
+            --memory 4.0Gi \
             --env-vars \
               NODE_ENV=production \
               PORT=3000 \
@@ -156,7 +189,7 @@ jobs:
     - name: Get Container App Info
       id: container-app-info
       run: |
-        FQDN=$(az containerapp show --name ${{ env.AZURE_CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn --output tsv)
+        FQDN=$(az containerapp show --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn --output tsv)
         echo "Container App deployed successfully!"
         echo "FQDN: $FQDN"
         echo "Access your app at: https://$FQDN"
@@ -166,7 +199,7 @@ jobs:
       run: |
         echo "📋 Recent Container App logs:"
         az containerapp logs show \
-          --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+          --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
           --follow false \
           --tail 50 || echo "Could not retrieve logs (this is normal for new deployments)"
@@ -201,14 +234,14 @@ jobs:
       run: |
         echo "📋 Container App logs after test:"
         az containerapp logs show \
-          --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+          --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
           --follow false \
           --tail 100 || echo "Could not retrieve logs"
 
         echo "📊 Container App revision status:"
         az containerapp revision list \
-          --name ${{ env.AZURE_CONTAINER_APP_NAME }} \
+          --name ${{ steps.branch-vars.outputs.CONTAINER_APP_NAME }} \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
           --query '[].{Name:name,Active:properties.active,CreatedTime:properties.createdTime,Replicas:properties.replicas}' \
           --output table

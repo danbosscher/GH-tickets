@@ -30,6 +30,13 @@ db.exec(`
     timestamp INTEGER,
     last_updated TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS aks_issues_cache (
+    id INTEGER PRIMARY KEY,
+    data TEXT,
+    timestamp INTEGER,
+    last_updated TEXT
+  );
 `);
 
 interface CacheEntry {
@@ -40,6 +47,12 @@ interface CacheEntry {
 
 interface GitHubCache {
   data: RoadmapItem[];
+  timestamp: number;
+  lastUpdated: string;
+}
+
+interface AKSIssuesCache {
+  data: AKSIssue[];
   timestamp: number;
   lastUpdated: string;
 }
@@ -93,6 +106,32 @@ function saveGitHubCache(data: RoadmapItem[]): void {
   console.log('Saved GitHub data to SQLite cache');
 }
 
+function loadAKSIssuesCache(): AKSIssuesCache | null {
+  const stmt = db.prepare('SELECT data, timestamp, last_updated FROM aks_issues_cache WHERE id = 1');
+  const row = stmt.get() as { data: string; timestamp: number; last_updated: string } | undefined;
+  
+  if (row && (Date.now() - row.timestamp < GITHUB_CACHE_DURATION)) {
+    return {
+      data: JSON.parse(row.data),
+      timestamp: row.timestamp,
+      lastUpdated: row.last_updated
+    };
+  }
+  return null;
+}
+
+function saveAKSIssuesCache(data: AKSIssue[]): void {
+  const timestamp = Date.now();
+  const lastUpdated = new Date().toISOString();
+  
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO aks_issues_cache (id, data, timestamp, last_updated) 
+    VALUES (1, ?, ?, ?)
+  `);
+  stmt.run(JSON.stringify(data), timestamp, lastUpdated);
+  console.log('Saved AKS issues data to SQLite cache');
+}
+
 // Get cache key for an issue
 function getCacheKey(title: string, body: string): string {
   // Use a simple hash of title + body length to create a unique key
@@ -128,6 +167,60 @@ const openai = new OpenAI({
     'api-key': process.env.AZURE_OPENAI_API_KEY!,
   },
 });
+
+interface AKSIssue {
+  id: string;
+  title: string;
+  url: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  labels: Array<{
+    name: string;
+    color: string;
+  }>;
+  assignees: Array<{
+    login: string;
+    name: string | null;
+    avatarUrl: string;
+  }>;
+  state: string;
+  comments: number;
+  commentsData?: {
+    totalCount: number;
+    pageInfo?: {
+      hasNextPage: boolean;
+      endCursor: string;
+    };
+    nodes: Array<{
+      id: string;
+      createdAt: string;
+      body: string;
+      author: {
+        login: string;
+        name: string | null;
+      };
+      url: string;
+    }>;
+  };
+  lastComment?: {
+    createdAt: string;
+    author: {
+      login: string;
+      name: string | null;
+    };
+  } | null;
+  needsResponse?: boolean;
+  aiSummary?: {
+    currentStatus: string;
+    nextSteps: string;
+    analysis: {
+      isKnownIssue: boolean;
+      isExpectedBehaviour: boolean;
+      shouldClose: boolean;
+    };
+  } | null;
+}
 
 interface RoadmapItem {
   id: string;
@@ -482,45 +575,81 @@ app.get('/api/progress', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('Access-Control-Allow-Origin', '*');
   
-  // Store the response object for progress updates
-  progressClients.add(res);
+  const requestType = req.query.type as string || 'roadmap'; // 'roadmap' or 'aks'
+  const clientId = `${requestType}_${Date.now()}_${Math.random()}`;
+  
+  // Store the response object with request type for progress updates
+  progressClients.set(clientId, { res, type: requestType });
+  
+  console.log(`New EventSource client connected for ${requestType}: ${clientId}`);
+  
+  // Send initial connection confirmation
+  try {
+    res.write(`data: ${JSON.stringify({ step: 'Connected to progress stream', current: 0, total: 100 })}\n\n`);
+  } catch (error) {
+    console.error('Failed to send initial progress message:', error);
+  }
   
   // Clean up on client disconnect
   req.on('close', () => {
-    progressClients.delete(res);
+    console.log(`EventSource client disconnected: ${clientId}`);
+    progressClients.delete(clientId);
   });
 });
 
 // Progress tracking
-const progressClients = new Set<any>();
-let currentProgress = { step: '', current: 0, total: 0 };
+const progressClients = new Map<string, { res: any, type: string }>();
 
-function sendProgress(step: string, current: number, total: number) {
-  currentProgress = { step, current, total };
-  const data = JSON.stringify(currentProgress);
+function sendProgress(step: string, current: number, total: number, requestType: string = 'roadmap') {
+  const data = JSON.stringify({ step, current, total });
+  console.log(`Sending progress for ${requestType}: ${step} (${current}/${total})`);
   
-  progressClients.forEach(client => {
-    try {
-      client.write(`data: ${data}\n\n`);
-    } catch (error) {
-      progressClients.delete(client);
+  let clientCount = 0;
+  // Only send to clients of the same request type
+  progressClients.forEach((client, clientId) => {
+    if (client.type === requestType) {
+      clientCount++;
+      try {
+        client.res.write(`data: ${data}\n\n`);
+      } catch (error) {
+        console.error(`Failed to send progress to client ${clientId}:`, error);
+        progressClients.delete(clientId);
+      }
     }
   });
+  
+  console.log(`Progress sent to ${clientCount} ${requestType} clients`);
 }
 app.get('/api/cache-info', (req, res) => {
   try {
-    const githubCache = loadGitHubCache();
+    const requestType = req.query.type as string || 'roadmap'; // 'roadmap' or 'aks'
     
-    if (githubCache) {
-      res.json({
-        lastUpdated: githubCache.lastUpdated,
-        isCached: true
-      });
+    if (requestType === 'aks') {
+      const aksCache = loadAKSIssuesCache();
+      if (aksCache) {
+        res.json({
+          lastUpdated: aksCache.lastUpdated,
+          isCached: true
+        });
+      } else {
+        res.json({
+          lastUpdated: null,
+          isCached: false
+        });
+      }
     } else {
-      res.json({
-        lastUpdated: null,
-        isCached: false
-      });
+      const githubCache = loadGitHubCache();
+      if (githubCache) {
+        res.json({
+          lastUpdated: githubCache.lastUpdated,
+          isCached: true
+        });
+      } else {
+        res.json({
+          lastUpdated: null,
+          isCached: false
+        });
+      }
     }
   } catch (error) {
     console.error('Error getting cache info:', error);
@@ -537,13 +666,15 @@ app.get('/api/roadmap', async (req, res) => {
       const cachedData = loadGitHubCache();
       if (cachedData) {
         console.log('Serving GitHub data from cache');
+        // Send progress update for cache hit to close any waiting EventSource connections
+        sendProgress('Loaded from cache', 100, 100, 'roadmap');
         return res.json(cachedData.data);
       }
     }
     
     console.log(forceRefresh ? 'Force refresh requested, fetching fresh data...' : 'GitHub cache miss, fetching fresh data...');
     
-    sendProgress('Fetching GitHub data', 0, 100);
+    sendProgress('Fetching GitHub data', 0, 100, 'roadmap');
     
     let allItems: any[] = [];
     let hasNextPage = true;
@@ -554,7 +685,7 @@ app.get('/api/roadmap', async (req, res) => {
     const MAX_PAGES = 50; // Prevent excessive data fetching
     while (hasNextPage && pageCount < MAX_PAGES) {
       pageCount++;
-      sendProgress(`Fetching GitHub data (page ${pageCount})`, pageCount * 10, 100);
+      sendProgress(`Fetching GitHub data (page ${pageCount})`, pageCount * 10, 100, 'roadmap');
       const query = `
         query($cursor: String) {
           organization(login: "Azure") {
@@ -645,7 +776,7 @@ app.get('/api/roadmap', async (req, res) => {
     }
     
     console.log(`Total items fetched: ${allItems.length}`);
-    sendProgress('Processing items for AI extraction', 0, allItems.length);
+    sendProgress('Processing items for AI extraction', 0, allItems.length, 'roadmap');
 
     const validItems = allItems.filter((item: any) => item.content);
     
@@ -661,7 +792,7 @@ app.get('/api/roadmap', async (req, res) => {
         const globalIndex = i + batchIndex;
         const issue = item.content;
         
-        sendProgress(`Processing AI extraction (${globalIndex + 1}/${validItems.length})`, globalIndex + 1, validItems.length);
+        sendProgress(`Processing AI extraction (${globalIndex + 1}/${validItems.length})`, globalIndex + 1, validItems.length, 'roadmap');
         
         if (!issue || !issue.title) {
           console.log(`Skipping item ${globalIndex + 1}/${validItems.length} with no title:`, JSON.stringify(item, null, 2));
@@ -749,12 +880,12 @@ app.get('/api/roadmap', async (req, res) => {
     }
     
     console.log(`Completed processing ${roadmapItems.length} items with AI extraction.`);
-    sendProgress('Saving to cache', roadmapItems.length, roadmapItems.length);
+    sendProgress('Saving to cache', roadmapItems.length, roadmapItems.length, 'roadmap');
 
     // Save the processed data to GitHub cache
     saveGitHubCache(roadmapItems);
     
-    sendProgress('Complete', roadmapItems.length, roadmapItems.length);
+    sendProgress('Complete', roadmapItems.length, roadmapItems.length, 'roadmap');
 
     res.json(roadmapItems);
   } catch (error) {
@@ -836,6 +967,436 @@ async function processRetryQueue() {
     }
   }
 }
+
+// Function to analyze issue with AI for summary and classification
+async function analyzeIssueWithAI(title: string, body: string, comments: any[]): Promise<{
+  currentStatus: string;
+  nextSteps: string;
+  analysis: {
+    isKnownIssue: boolean;
+    isExpectedBehaviour: boolean;
+    shouldClose: boolean;
+  };
+} | null> {
+  if (!body || body.trim().length === 0) return null;
+  
+  const cacheKey = `analysis_${title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)}_${body.length}_${comments.length}`;
+  const cached = loadAICache(cacheKey);
+  
+  if (cached && isCacheValid(cached)) {
+    if (cached.failed) {
+      const oneMinute = 60 * 1000;
+      if (Date.now() - cached.timestamp < oneMinute) {
+        console.log(`Recent analysis failure for: ${title.substring(0, 50)}... (will retry later)`);
+        return null;
+      }
+      console.log(`Retrying failed analysis for: ${title.substring(0, 50)}...`);
+    } else {
+      console.log(`Analysis cache hit for: ${title.substring(0, 50)}...`);
+      if (cached.result) {
+        try {
+          return JSON.parse(cached.result);
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+  }
+  
+  try {
+    // Prepare comments text (limit to recent comments to avoid token limit)
+    const recentComments = comments
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 10)
+      .map((comment, index) => `Comment ${index + 1} by ${comment.author?.login || 'Unknown'} (${comment.createdAt}):\n${comment.body}`)
+      .join('\n\n---\n\n');
+
+    const prompt = `You are analyzing Azure AKS GitHub issues to provide helpful insights. Please analyze this issue and provide:
+
+1. Current Status: A brief 1-paragraph summary of what's happening with this issue
+2. Next Steps: A brief 1-paragraph summary of what should happen next
+3. Analysis: Three true/false determinations:
+   - Is this a known issue? (true if it's a commonly reported problem or duplicate)
+   - Is this expected behaviour? (true if this is working as designed, not a bug)
+   - Should we close this issue? (true if it appears resolved, duplicate, or not actionable)
+
+Issue Title: ${title}
+
+Issue Body:
+${body}
+
+Recent Comments:
+${recentComments}
+
+Please respond with ONLY a JSON object in this exact format:
+{
+  "currentStatus": "Brief paragraph about current status",
+  "nextSteps": "Brief paragraph about next steps",
+  "analysis": {
+    "isKnownIssue": false,
+    "isExpectedBehaviour": false,
+    "shouldClose": false
+  }
+}`;
+
+    console.log(`AI analysis for: ${title.substring(0, 50)}...`);
+    const response = await openai.chat.completions.create({
+      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful assistant that analyzes GitHub issues. Always respond with valid JSON only.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      max_tokens: 500,
+      temperature: 0.1
+    });
+
+    const result = response.choices[0]?.message?.content?.trim();
+    
+    if (!result) {
+      saveAICache(cacheKey, null, false);
+      return null;
+    }
+    
+    try {
+      // Remove markdown code blocks if present
+      let cleanResult = result.trim();
+      if (cleanResult.startsWith('```json')) {
+        cleanResult = cleanResult.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (cleanResult.startsWith('```')) {
+        cleanResult = cleanResult.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
+      
+      const parsed = JSON.parse(cleanResult);
+      
+      if (!parsed.currentStatus || !parsed.nextSteps || !parsed.analysis) {
+        saveAICache(cacheKey, null, false);
+        return null;
+      }
+      
+      // Save successful result to cache
+      saveAICache(cacheKey, JSON.stringify(parsed), false);
+      
+      return parsed;
+    } catch (parseError) {
+      console.error('Failed to parse analysis result:', parseError, 'Result:', result);
+      saveAICache(cacheKey, null, true);
+      return null;
+    }
+  } catch (error) {
+    console.error('Issue analysis failed:', error);
+    saveAICache(cacheKey, null, true);
+    return null;
+  }
+}
+
+// Function to fetch all open issues from Azure/AKS repository
+async function fetchAKSOpenIssues(): Promise<AKSIssue[]> {
+  const issues: AKSIssue[] = [];
+  let hasNextPage = true;
+  let cursor: string | null = null;
+  let pageCount = 0;
+  const MAX_PAGES = 20; // Limit to first ~1000 issues
+
+  while (hasNextPage && pageCount < MAX_PAGES) {
+    pageCount++;
+    const progressPercent = Math.round(5 + (pageCount / MAX_PAGES) * 15); // 5% to 20%
+    sendProgress(`Fetching AKS issues (page ${pageCount}/${MAX_PAGES})`, progressPercent, 100, 'aks');
+    console.log(`Fetching AKS issues page ${pageCount}...`);
+    
+    const query = `
+      query($cursor: String) {
+        repository(owner: "Azure", name: "AKS") {
+          issues(first: 50, after: $cursor, states: OPEN) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              title
+              url
+              body
+              createdAt
+              updatedAt
+              state
+              labels(first: 20) {
+                nodes {
+                  name
+                  color
+                }
+              }
+              assignees(first: 10) {
+                nodes {
+                  login
+                  name
+                  avatarUrl
+                }
+              }
+              comments(first: 10) {
+                totalCount
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  id
+                  createdAt
+                  body
+                  author {
+                    login
+                    ... on User {
+                      name
+                    }
+                  }
+                  url
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const response: any = await graphqlWithAuth(query, { cursor });
+      
+      if (!response?.repository?.issues) {
+        throw new Error('Failed to fetch issues from Azure/AKS repository');
+      }
+      
+      const issuesData = response.repository.issues;
+      const fetchedIssues = issuesData.nodes.map((issue: any) => ({
+        id: issue.id,
+        title: issue.title,
+        url: issue.url,
+        body: issue.body || '',
+        createdAt: issue.createdAt,
+        updatedAt: issue.updatedAt,
+        state: issue.state,
+        labels: issue.labels.nodes.map((label: any) => ({
+          name: label.name,
+          color: label.color
+        })),
+        assignees: issue.assignees.nodes.map((assignee: any) => ({
+          login: assignee.login,
+          name: assignee.name,
+          avatarUrl: assignee.avatarUrl
+        })),
+        comments: issue.comments.totalCount,
+        commentsData: issue.comments, // Preserve the full comments structure for processing
+        aiSummary: null // Will be populated by AI analysis
+      }));
+      
+      issues.push(...fetchedIssues);
+      hasNextPage = issuesData.pageInfo.hasNextPage;
+      cursor = issuesData.pageInfo.endCursor;
+      
+      console.log(`Fetched ${fetchedIssues.length} issues (total: ${issues.length})`);
+      
+      // Add delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 200));
+    } catch (error) {
+      console.error('Error fetching AKS issues:', error);
+      break;
+    }
+  }
+  
+  return issues;
+}
+
+// Function to get roadmap issue IDs to filter them out
+async function getRoadmapIssueIds(): Promise<Set<string>> {
+  try {
+    const issueIds = new Set<string>();
+    let hasNextPage = true;
+    let cursor: string | null = null;
+    let pageCount = 0;
+    const MAX_PAGES = 20; // Safety limit
+
+    while (hasNextPage && pageCount < MAX_PAGES) {
+      pageCount++;
+      const query = `
+        query($cursor: String) {
+          organization(login: "Azure") {
+            projectV2(number: 685) {
+              items(first: 100, after: $cursor) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  content {
+                    ... on Issue {
+                      id
+                      url
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `;
+      
+      const response: any = await graphqlWithAuth(query, { cursor });
+      const projectData = response?.organization?.projectV2?.items;
+      
+      if (!projectData) {
+        console.log('No more roadmap project data found');
+        break;
+      }
+      
+      const roadmapItems = projectData.nodes || [];
+      
+      roadmapItems.forEach((item: any) => {
+        if (item.content?.id) {
+          issueIds.add(item.content.id);
+        }
+      });
+      
+      hasNextPage = projectData.pageInfo.hasNextPage;
+      cursor = projectData.pageInfo.endCursor;
+      
+      console.log(`Fetched roadmap page ${pageCount}, found ${roadmapItems.length} items (total IDs: ${issueIds.size})`);
+      
+      // Add delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    console.log(`Found ${issueIds.size} roadmap issue IDs to filter out (${pageCount} pages)`);
+    return issueIds;
+  } catch (error) {
+    console.error('Error fetching roadmap issue IDs:', error);
+    return new Set();
+  }
+}
+
+app.get('/api/aks-issues', async (req, res) => {
+  try {
+    const forceRefresh = req.query.refresh === 'true';
+    
+    // Check AKS issues cache first (unless force refresh)
+    if (!forceRefresh) {
+      const cachedData = loadAKSIssuesCache();
+      if (cachedData) {
+        console.log('Serving AKS issues data from cache');
+        // Send progress update for cache hit to close any waiting EventSource connections
+        sendProgress('Loaded from cache', 100, 100, 'aks');
+        return res.json(cachedData.data);
+      }
+    }
+    
+    console.log(forceRefresh ? 'Force refresh requested for AKS issues, fetching fresh data...' : 'AKS issues cache miss, fetching fresh data...');
+    
+    sendProgress('Starting AKS issues fetch', 0, 100, 'aks');
+    
+    // Get roadmap issue IDs to filter out
+    sendProgress('Fetching roadmap issue IDs to filter', 2, 100, 'aks');
+    const roadmapIssueIds = await getRoadmapIssueIds();
+    
+    // Fetch all AKS open issues (this will send its own progress updates from 5% to 20%)
+    sendProgress('Starting to fetch AKS open issues', 5, 100, 'aks');
+    const allIssues = await fetchAKSOpenIssues();
+    
+    sendProgress(`Filtering out ${roadmapIssueIds.size} roadmap issues from ${allIssues.length} total issues`, 22, 100, 'aks');
+    
+    // Filter out roadmap issues
+    const filteredIssues = allIssues.filter(issue => !roadmapIssueIds.has(issue.id));
+    
+    console.log(`Filtered out ${allIssues.length - filteredIssues.length} roadmap issues, processing ${filteredIssues.length} remaining issues`);
+    console.log(`Total open issues in repo: ${allIssues.length}, Issues after filtering roadmap items: ${filteredIssues.length}`);
+    
+    sendProgress(`Starting AI analysis of ${filteredIssues.length} issues (${allIssues.length} total issues fetched)`, 25, 100, 'aks');
+    
+    // Process AI analysis in batches
+    const CONCURRENCY_LIMIT = 5; // Process 5 issues in parallel
+    const processedIssues: AKSIssue[] = [];
+    const totalIssues = filteredIssues.length;
+    
+    for (let i = 0; i < filteredIssues.length; i += CONCURRENCY_LIMIT) {
+      const batch = filteredIssues.slice(i, i + CONCURRENCY_LIMIT);
+      
+      // Update progress for the batch
+      const progressPercent = Math.round(25 + ((i / totalIssues) * 70)); // 25% to 95%
+      sendProgress(`Analyzing batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(totalIssues / CONCURRENCY_LIMIT)} (${i + 1}-${Math.min(i + CONCURRENCY_LIMIT, totalIssues)} of ${totalIssues} issues, ${allIssues.length} total)`, progressPercent, 100, 'aks');
+      
+      const batchPromises = batch.map(async (issue, batchIndex) => {
+        const globalIndex = i + batchIndex;
+        
+        console.log(`Processing AI analysis for issue ${globalIndex + 1}/${filteredIssues.length}: ${issue.title.substring(0, 50)}...`);
+        
+        // Fetch all comments if there are more than 10
+        let allComments = issue.commentsData?.nodes || [];
+        if (issue.commentsData?.pageInfo?.hasNextPage && issue.commentsData.nodes && issue.commentsData.pageInfo.endCursor) {
+          console.log(`Issue ${issue.title} has more than 10 comments, fetching all...`);
+          allComments = await fetchAllComments(issue.id, issue.commentsData.nodes, issue.commentsData.pageInfo.hasNextPage, issue.commentsData.pageInfo.endCursor);
+        }
+        
+        // Get last comment info (sort all comments by date)
+        const sortedComments = allComments
+          .filter((comment: any) => comment.author)
+          .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        
+        const lastComment = sortedComments.length > 0 ? {
+          createdAt: sortedComments[0].createdAt,
+          author: {
+            login: sortedComments[0].author.login,
+            name: sortedComments[0].author.name || null
+          }
+        } : null;
+        
+        // Determine if needs response from team (if last comment is not from an assignee)
+        const allAssigneeLogins = issue.assignees.map((assignee: any) => assignee.login);
+        const needsResponse = lastComment ? !allAssigneeLogins.includes(lastComment.author.login) : false;
+        
+        // Use recent comments for AI analysis (limit to 10 most recent for performance)
+        const recentComments = sortedComments.slice(0, 10);
+        const aiSummary = await analyzeIssueWithAI(issue.title, issue.body, recentComments);
+        
+        const { commentsData, ...cleanIssue } = issue;
+        return {
+          ...cleanIssue,
+          lastComment,
+          needsResponse,
+          aiSummary
+        };
+      });
+      
+      const batchResults = await Promise.all(batchPromises);
+      processedIssues.push(...batchResults);
+      
+      const batchNumber = Math.floor(i / CONCURRENCY_LIMIT) + 1;
+      const totalBatches = Math.ceil(filteredIssues.length / CONCURRENCY_LIMIT);
+      console.log(`Completed batch ${batchNumber}/${totalBatches}`);
+      
+      // Add delay between batches to avoid overwhelming the AI service
+      if (i + CONCURRENCY_LIMIT < filteredIssues.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    sendProgress('Saving to cache', 95, 100, 'aks');
+    
+    // Save the processed data to AKS issues cache
+    saveAKSIssuesCache(processedIssues);
+    
+    console.log(`Completed processing ${processedIssues.length} AKS issues`);
+    
+    sendProgress('Complete', 100, 100, 'aks');
+    
+    res.json(processedIssues);
+  } catch (error) {
+    console.error('Error fetching AKS issues:', error);
+    res.status(500).json({ error: 'Failed to fetch AKS issues' });
+  }
+});
 
 // Start background retry process - runs every minute
 setInterval(processRetryQueue, 60 * 1000);
