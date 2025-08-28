@@ -1,15 +1,26 @@
-# Azure AKS Roadmap Viewer
+# Azure AKS Analytics Dashboard
 
-A React/TypeScript web application that displays the Azure AKS public roadmap from GitHub Project #685 with AI-powered timeline extraction.
+A React/TypeScript web application that provides comprehensive analytics for Azure AKS, including the public roadmap from GitHub Project #685 and open issues analysis, both enhanced with AI-powered insights.
 
 ## Features
 
+### Roadmap Viewer
 - **Interactive Filtering**: Filter roadmap items by status, labels, and assignees with dropdown multi-select
 - **Smart Timeline Extraction**: Uses Azure OpenAI to extract customer timeline information from issue descriptions
 - **Real-time Progress**: Shows progress during data refresh operations
 - **SQLite Caching**: Efficient caching of both GitHub data and AI extractions with background retry system
-- **Responsive Design**: Clean, modern interface optimized for roadmap viewing
+
+### AKS Issues Analysis
+- **Comprehensive Issue Tracking**: View and analyze all open AKS GitHub issues
+- **AI-Powered Insights**: Automated analysis of issue status, next steps, and recommendations
+- **Advanced Filtering**: Filter by labels, assignees, and response status
+- **Smart Issue Classification**: AI determines if issues are known problems, expected behavior, or candidates for closure
+- **Response Tracking**: Identify issues that need team response
+
+### Shared Features
+- **Responsive Design**: Clean, modern interface optimized for data visualization
 - **Persistent Preferences**: Remembers filter selections using localStorage
+- **Column Customization**: Show/hide columns based on your needs
 
 ## Setup
 
@@ -76,15 +87,22 @@ Push to `main` or `master` branch to trigger automatic deployment to Azure Conta
 - **Frontend**: React 18 with TypeScript
 - **Backend**: Express.js with TypeScript
 - **Database**: SQLite for caching
-- **AI**: Azure OpenAI for timeline extraction
+- **AI**: Azure OpenAI for timeline extraction and issue analysis
 - **Deployment**: Docker + Azure Container Instances
 - **CI/CD**: GitHub Actions
 
 ## API Endpoints
 
+### Roadmap
 - `GET /api/roadmap`: Fetch roadmap data (with caching)
 - `GET /api/roadmap?refresh=true`: Force refresh from GitHub
 - `GET /api/cache-info`: Get cache timestamp information
+
+### AKS Issues
+- `GET /api/aks-issues`: Fetch AKS issues data (with caching)
+- `GET /api/aks-issues?refresh=true`: Force refresh from GitHub
+
+### Progress Tracking
 - `GET /api/progress`: Server-sent events for progress updates
 
 ## Contributing
